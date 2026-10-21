@@ -63,7 +63,11 @@ off).
 | Japanese → English | [LiquidAI LFM2-350M-ENJP-MT](https://huggingface.co/LiquidAI/LFM2-350M-ENJP-MT) | 0.35B | LFM Open License |
 | Optional speech model | [Kotoba-Whisper v2.0](https://huggingface.co/kotoba-tech/kotoba-whisper-v2.0), [MLX build](https://huggingface.co/kaiinui/kotoba-whisper-v2.0-mlx) (`--asr kotoba`, default until 1.4.0) | 0.76B | Apache-2.0 |
 | Optional speech model | [Qwen3-ASR 1.7B / 0.6B](https://huggingface.co/Qwen/Qwen3-ASR-1.7B), [8-bit MLX builds](https://huggingface.co/moona3k/mlx-qwen3-asr-1.7b-8bit) via [mlx-qwen3-asr](https://github.com/moona3k/mlx-qwen3-asr) (`--asr qwen3`, `qwen3-small`) | 1.7B / 0.6B | Apache-2.0 |
+| Speech → text on the Neural Engine (`--turbo`) | [Parakeet 0.6B ja, Core ML build](https://huggingface.co/FluidInference/parakeet-0.6b-ja-coreml) (FluidInference) | 0.6B | CC-BY-4.0 |
 | Spoken English (`--speak`) | The voices built into macOS (`say`) | none | part of macOS |
+| Word lookup: dictionary | [JMdict](https://www.edrdg.org/wiki/index.php/JMdict-EDICT_Dictionary_Project) (EDRDG), split into words by [fugashi](https://github.com/polm/fugashi) + [unidic-lite](https://github.com/polm/unidic-lite) | 220k entries | CC BY-SA 4.0 / BSD |
+| Word lookup: translation | [LFM2-350M-ENJP-MT GGUF](https://huggingface.co/LiquidAI/LFM2-350M-ENJP-MT-GGUF), 8-bit, CPU | 0.35B | LFM Open License |
+| Word lookup: explanation | [LFM2.5-1.2B-Instruct GGUF](https://huggingface.co/LiquidAI/LFM2.5-1.2B-Instruct-GGUF), 4-bit, CPU | 1.2B | LFM Open License |
 | Optional translator | [PLaMo 2 Translate](https://huggingface.co/pfnet/plamo-2-translate) (`--mt plamo`) | 9.5B | PLaMo Community License |
 
 The models are downloaded from Hugging Face during install and are covered by their own
@@ -187,11 +191,77 @@ Other things considered for speed:
   Mac's output on BlackHole, a line through the default output, which reaches the right ear the
   way a call does. That checks both halves of the routing before a real call.
 
+### Turbo: one job per chip (1.6.0)
+
+The Mac has three separate engines: CPU, GPU and Neural Engine. Until 1.6.0 everything that
+mattered ran on the GPU, one step after another. `--turbo`:
+
+| Job | Chip | How |
+| --- | --- | --- |
+| Hearing (speech → Japanese) | Neural Engine | Parakeet's Core ML build via coremltools, `CPU_AND_NE` |
+| Translating | GPU | LFM2-ENJP on MLX, in a thread of its own |
+| Word lookup | CPU | a separate program, llama.cpp with `--device none` |
+| Voice, voice activity | CPU | as before |
+
+- **Side by side:** the main thread keeps listening and hearing on the Neural Engine while the
+  translator works on the GPU; finished lines go through a queue so they still show in order.
+  In-progress drafts only use the GPU when no real line is waiting for it. Turbo only turns this on
+  with the Neural Engine model: two threads must never use MLX at once.
+- **Sooner at a pause:** the early transcription starts at a 0.15 s pause (0.25 s otherwise). If
+  Parakeet's text then ends a sentence (。？！), the line is finished there instead of waiting
+  for the 0.5 s pause. If they keep talking, the early translation is cancelled so it doesn't hold
+  up the GPU.
+- **Why the pause matters most:** with stand-in models timed like the real ones (hearing 0.2 s on
+  the GPU vs 0.09 s on the Neural Engine, translation 0.15 s), on a real recording, control showed
+  lines 0.60 to 0.68 s after the end of speech and turbo 0.38 to 0.42 s, with identical lines. An
+  earlier version that still waited 0.25 s gained almost nothing: the wait, not the chip, was the
+  limit.
+- **The Neural Engine model:** a fixed 15 s window (shorter audio is padded), decoded with
+  Parakeet's CTC head (greedy). Its vocabulary is identical to the MLX build's. If it can't load,
+  the captioner falls back to the GPU Parakeet and runs without lanes.
+- **Parakeet stopping after one sentence**, now handled for both decoders: on a real voicemail,
+  CTC placed 「。」 at the very end of the audio and dropped the sentence before it, so "where it
+  stopped" means the last word, not punctuation. CTC also spots words early, so instead of
+  re-reading whatever follows the last word (which produced junk like 「あした?」 from the word's
+  own tail), it re-reads only after a real pause (≥ 0.13 s, 20 dB below the speech) followed by at
+  least 0.3 s of speech. Checked on the voicemail with both decoders: every sentence complete, no
+  junk.
+
+`call-captions bench AUDIO` measures all of it on the Mac itself: the speech models on the same
+sentences; a live race where the recording plays in real time through control and through turbo,
+timing each line from the end of speech to the English on screen; the word lookup; and turbo again
+while a lookup runs every second.
+
+### Word lookup (1.6.0)
+
+`call-captions lookup` (the app opens it in an iTerm2 split) watches for Japanese being copied;
+iTerm2 copies whatever is highlighted. For each highlight:
+
+1. **Dictionary, instant (~1 ms):** fugashi/UniDic splits the text into words with their
+   dictionary forms; the longest matching JMdict entry wins, so set phrases (恐れ入りますが,
+   よろしくお願いします, させていただく) come up whole. Particles and endings never start a
+   lookup, helper verbs (いる, する …) aren't shown on their own, a phrase ending in grammar must be
+   a JMdict "expression", and UniDic's kanji lemma picks the right entry (為る "do", not 擦る
+   "rub"). Entries are ranked by JMdict's frequency marks. Humble, honorific and polite senses
+   are labelled.
+2. **Translation:** LFM2-350M-ENJP-MT's CPU (GGUF) build through `llama-server`.
+3. **Explanation:** LFM2.5-1.2B-Instruct, given the dictionary lines, shown word by word as it's
+   written. Compared on interview phrases: LFM2-1.2B answered in Japanese as if it were the
+   interviewer; Qwen3-1.7B made up a reading for 恐れ入りますが; LFM2.5-1.2B-JP was right but wordy.
+   Without the dictionary lines all of them got some phrases wrong; with them, LFM2.5-1.2B-Instruct
+   got all eight right, even who is asking whom (「土日も出勤できますか」 → "asking if you can work
+   on the weekend").
+
+Both models run in `llama-server` processes with `--device none -ngl 0` (no GPU at all), 2 and 4
+threads, so the captions keep CPU room for voice detection and the voice. Translation and
+explanation start together.
+
 ### Program layout
 
 | Path | What it is |
 | --- | --- |
-| `live_captions.py` | The captioner: audio input, VAD, speech recognition, translation, terminal display |
+| `live_captions.py` | The captioner: audio input, VAD, speech recognition, translation, terminal display, bench |
+| `lookup.py` | The word lookup pane: dictionary build and lookups, the CPU models, watching highlights |
 | `bin/call-captions` | The command users run: setup, first run, sound routing, app, uninstall |
 | `src/audio.c` | `call-captions-audio`, a small CoreAudio helper built during `brew install`: sets up and switches the routing, and plays the voice and the call to each ear (`monitor`) |
 | `app/` | Template for `Call Captions.app` (Info.plist, launcher script, icon) |
@@ -307,6 +377,18 @@ Development happened in a Linux container without a Mac, so testing was split:
     reusing a line made in advance, and falling back from a missing voice.
   - `--early` was run on recorded speech: identical lines with and without it, all of them ready
     at the pause.
+- **1.6.0** (not yet confirmed on a Mac):
+  - Neural Engine Parakeet: inputs and outputs taken from the Core ML model files; the decoding
+    (CTC, vocabulary, picking up after a dropped sentence) run on the real voicemail using the same
+    model's CTC head on Linux: all sentences complete. The Core ML calls themselves need a Mac.
+  - Turbo lanes and the sentence-end shortcut: stand-in models with realistic timings on the real
+    recording, played in real time: same lines in the same order, 0.38 s vs 0.60 s average.
+  - Word lookup: run for real on Linux (dictionary, llama.cpp CPU build, both models) on interview
+    phrases. On that 4-core cloud machine the translation took about 1–1.5 s and the explanation
+    about 2–2.5 s; the M4's CPU should be several times faster. `bench` measures it.
+  - The whole `bench` ran end to end on Linux with stand-ins for the Apple-only models.
+  - Homebrew: the upgrade to 1.6.0 built the dictionary inside the post-install sandbox and the
+    next upgrade carried it over. This test caught that the formula didn't install `lookup.py`.
 
 ## Known limits and troubleshooting
 
@@ -335,4 +417,11 @@ Researched in 2026 for iPhone 17:
 Built with [MLX](https://github.com/ml-explore/mlx), [mlx-whisper](https://github.com/ml-explore/mlx-examples),
 [mlx-lm](https://github.com/ml-explore/mlx-lm), [parakeet-mlx](https://github.com/senstella/parakeet-mlx),
 [Silero VAD](https://github.com/snakers4/silero-vad), [BlackHole](https://github.com/ExistentialAudio/BlackHole),
-[uv](https://github.com/astral-sh/uv) and [Homebrew](https://brew.sh).
+[uv](https://github.com/astral-sh/uv), [coremltools](https://github.com/apple/coremltools),
+[llama.cpp](https://github.com/ggml-org/llama.cpp), [fugashi](https://github.com/polm/fugashi),
+[unidic-lite](https://github.com/polm/unidic-lite) and [Homebrew](https://brew.sh).
+
+The word lookup uses the [JMdict](https://www.edrdg.org/wiki/index.php/JMdict-EDICT_Dictionary_Project)
+dictionary files. These files are the property of the
+[Electronic Dictionary Research and Development Group](https://www.edrdg.org/), and are used in
+conformance with the Group's [licence](https://www.edrdg.org/edrdg/licence.html).

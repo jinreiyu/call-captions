@@ -3,6 +3,22 @@
 Milestones are versions confirmed working on a real Mac. Each is kept installable for rollback
 as `brew install jinreiyu/tap/call-captions-X.Y.Z` and on the `milestone/vX.Y.Z` branch.
 
+## 1.6.0
+
+Not a milestone yet: roll back with `call-captions-1.2.0` if anything is wrong.
+
+- **Word lookup pane:** highlight Japanese in the captions to see each word's reading and meaning
+  (JMdict, instant), a translation and a one-line explanation. It runs on the CPU only, in its own
+  program, so the captions never wait for it. The app opens it beside the captions;
+  `call-captions lookup` by hand, `--no-lookup` to skip it.
+- **`--turbo`:** speech recognition on the Neural Engine (Parakeet's Core ML build), translation on
+  the GPU side by side, and lines finish as soon as a sentence ends. Falls back to the GPU by itself.
+- **`call-captions bench AUDIO`** now races the current version (control) against turbo on your
+  recording in real time, times the word lookup, and runs turbo again with lookups going.
+- Parakeet no longer adds stray words at the end of a line when it re-reads a dropped sentence.
+- Installs llama.cpp and about 1.6 GB more (the Neural Engine model, the dictionary and two small
+  CPU models). Upgrades reuse the dictionary.
+
 ## 1.5.1
 
 - `call-captions help` (also `-help`, `-h`, `--help`) now explains the features in plain words:

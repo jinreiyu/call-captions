@@ -8,7 +8,7 @@
 # removed without asking.
 set -euo pipefail
 
-VERSION="1.5.1"
+VERSION="1.6.0"
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 settings="${CALL_CAPTIONS_HOME:-$HOME/call-captions}"
 py="$here/venv/bin/python"
@@ -38,10 +38,17 @@ ${b}USE IT${r}
   Ctrl+C                         stop; the Mac's sound goes back to normal
   Take the call on this Mac (iPhone calls through Continuity) with your headset on.
 
+${b}WORD LOOKUP${r}
+  Highlight Japanese in the captions with the mouse: the pane beside them shows each word's
+  reading and meaning at once, then a translation and a one-line explanation. It runs on the
+  CPU only, so the captions never slow down. The app opens it for you; by hand: call-captions lookup
+  --no-lookup                    (in options.txt) don't open the lookup pane
+
 ${b}CHECK IT${r}
   call-captions test-voice       hear "Left ear…" on the left and "Right ear…" on the right
   call-captions --file AUDIO     run a recording through it, e.g. a voicemail
-  call-captions bench AUDIO      time each speech model on your recording, to pick the fastest
+  call-captions bench AUDIO      race the current version against --turbo on your recording,
+                                 and time the word lookup
 
 ${b}VOICE${r}
   --no-speak                     captions only, no voice
@@ -52,6 +59,8 @@ ${b}VOICE${r}
   Headphones only: on speakers the voice turns itself off so the caller can't hear it.
 
 ${b}SPEED AND ACCURACY${r}
+  --turbo                        speech recognition on the Neural Engine and translation on the
+                                 GPU side by side; a line shows as soon as a sentence ends
   --asr qwen3                    more accurate speech recognition, a bit slower
                                  (default: parakeet, the fastest)
   --hint "株式会社サンプル 山田" names you expect (works with --asr qwen3 or --asr kotoba)
@@ -104,10 +113,10 @@ install_env() {
   export UV_NO_CONFIG=1 UV_PYTHON_INSTALL_DIR="$here/python"
   export UV_CACHE_DIR="${HOMEBREW_CACHE:-$here}/call-captions-uv-cache"
 
-  # Upgrades and reinstalls get a new folder; bring the models (several GB) along instead of
-  # downloading them again. (The old folder is deleted by Homebrew afterwards.)
+  # Upgrades and reinstalls get a new folder; bring the models (several GB) and the word lookup
+  # dictionary along instead of downloading them again. (Homebrew deletes the old folder after.)
+  local old
   if [[ ! -d "$here/hf/hub" ]]; then
-    local old
     for old in "$here"/../../*/libexec/hf; do
       [[ -d "$old/hub" && "$(cd "$old" && pwd)" != "$here/hf" ]] || continue
       echo "==> Reusing the models from the previous version"
@@ -116,13 +125,23 @@ install_env() {
       break
     done
   fi
+  if [[ ! -f "$here/dict/jmdict.sqlite" ]]; then
+    for old in "$here"/../../*/libexec/dict; do
+      [[ -f "$old/jmdict.sqlite" && "$(cd "$old" && pwd)" != "$here/dict" ]] || continue
+      rm -rf "$here/dict"
+      mv "$old" "$here/dict"
+      break
+    done
+  fi
 
   echo "==> Python 3.12"
   [[ -x "$py" ]] || uv venv --quiet --python 3.12 --python-preference only-managed "$here/venv"
   echo "==> Python packages"
   uv pip install --quiet --python "$py" -r "$here/requirements.txt"
-  echo "==> Speech and translation models (about 3 GB the first time)"
+  echo "==> Speech and translation models (about 4 GB the first time)"
   "$py" "$here/live_captions.py" --download-only
+  echo "==> Word lookup: dictionary and small CPU models (about 1 GB the first time)"
+  "$py" "$here/lookup.py" --download-only || echo "    (the word lookup finishes setting up the first time it opens)"
 }
 
 build_app() {
@@ -380,6 +399,7 @@ case "${1:-}" in
   app) require_env; build_app --force ;;
   audio) require_env; prepare_audio --choose ;;
   bench) require_env; shift; "$py" "$here/live_captions.py" --bench "$@" ;;
+  lookup) require_env; shift; "$py" "$here/lookup.py" "$@" ;;
   test-voice) first_run; voice_env; shift; "$py" "$here/live_captions.py" --test-voice "$@" ;;
   uninstall) uninstall ;;
   version | --version) echo "call-captions $VERSION" ;;

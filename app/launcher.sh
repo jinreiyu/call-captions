@@ -1,7 +1,8 @@
 #!/bin/bash
 # Call Captions.app: opens iTerm2 (or Terminal) running `call-captions` with the options in
-# ~/call-captions/options.txt. The captioner runs inside the terminal so it uses the
-# terminal's microphone permission, which reading BlackHole needs.
+# ~/call-captions/options.txt, and the word lookup beside it (an iTerm2 split pane, or a second
+# Terminal window) unless the options say --no-lookup. The captioner runs inside the terminal
+# so it uses the terminal's microphone permission, which reading BlackHole needs.
 # `call-captions` fills in the two paths below when it builds the app.
 cli="__CLI__"
 settings="__SETTINGS__"
@@ -38,11 +39,14 @@ if [[ -f "$settings/options.txt" ]]; then
 fi
 printf -v run '%q' "$cli"
 cmd="clear; $run $opts"
+lookup="clear; $run lookup"
+[[ " $opts " == *" --no-lookup "* ]] && lookup=""
 
 if [[ "$term" == com.googlecode.iterm2 ]]; then
-  osascript - "$cmd" <<'EOF'
+  osascript - "$cmd" "$lookup" <<'EOF'
 on run argv
   set theCmd to item 1 of argv
+  set lookupCmd to item 2 of argv
   set wasRunning to application id "com.googlecode.iterm2" is running
   tell application id "com.googlecode.iterm2"
     activate
@@ -57,14 +61,21 @@ on run argv
     else
       set w to current window
     end if
-    tell current session of w to write text theCmd
+    tell current session of w
+      write text theCmd
+      if lookupCmd is not "" then
+        set lookupPane to (split vertically with default profile)
+        tell lookupPane to write text lookupCmd
+      end if
+    end tell
   end tell
 end run
 EOF
 else
-  osascript - "$cmd" <<'EOF'
+  osascript - "$cmd" "$lookup" <<'EOF'
 on run argv
   set theCmd to item 1 of argv
+  set lookupCmd to item 2 of argv
   set wasRunning to application id "com.apple.Terminal" is running
   tell application id "com.apple.Terminal"
     activate
@@ -79,6 +90,7 @@ on run argv
     else
       do script theCmd in window 1
     end if
+    if lookupCmd is not "" then do script lookupCmd
   end tell
 end run
 EOF

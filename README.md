@@ -24,7 +24,8 @@ brew install jinreiyu/tap/call-captions
 ```
 
 That one command installs everything: the program, its own Python, the packages and the speech
-and translation models (about 3 GB). All of it goes into Homebrew's folder for Call Captions, so
+and translation models, the word lookup's dictionary and models (about 5 GB in all) and
+[llama.cpp](https://github.com/ggml-org/llama.cpp). All of it goes into Homebrew's folder, so
 `brew uninstall` removes all of it again. Upgrades (`brew upgrade call-captions`) reuse the models.
 
 Then start it once:
@@ -127,22 +128,64 @@ way a call does).
 
 Try it on a recording: `call-captions --file ~/Downloads/voicemail.m4a`.
 
-### Which speech model is fastest on your Mac
+## Look up a word
+
+Highlight Japanese in the captions with the mouse. The **lookup pane** beside the captions shows:
+
+```
+伺ってもよろしいですか
+  伺う    うかがう   to call on someone; to ask; to inquire (humble)       ← dictionary, instant
+  宜しい  よろしい   good; OK (honorific)
+  ➜ May I ask?                                                          ← translation
+  ✎ "Would it be okay to ask?" It's polite and respectful.              ← explanation
+```
+
+- The app opens the pane for you (an iTerm2 split, or a second Terminal window). By hand:
+  `call-captions lookup`. `--no-lookup` in `options.txt` stops the app from opening it.
+- It runs **on the CPU only**, in its own program, so it never slows the captions or the voice:
+  the dictionary is [JMdict](https://www.edrdg.org/wiki/index.php/JMdict-EDICT_Dictionary_Project),
+  the translation the same LFM2-ENJP model (CPU build), the explanation LiquidAI LFM2.5-1.2B, both
+  through llama.cpp with the GPU switched off.
+- iTerm2 copies whatever you highlight, which is how the pane sees it. In Terminal, press Cmd+C
+  after highlighting. Nothing is saved and nothing leaves the Mac.
+
+## Turbo: every chip on its own job
+
+```bash
+call-captions --turbo
+```
+
+Speech recognition moves to the Mac's **Neural Engine**, translation keeps the **GPU** to itself,
+and both work at the same time. A line also shows as soon as a sentence ends (。？) instead of
+waiting out the full pause. The text is the same; it just arrives sooner. If the Neural Engine
+model can't load, it falls back to the GPU version by itself.
+
+| Job | Normal | `--turbo` |
+| --- | --- | --- |
+| Hearing Japanese | GPU | Neural Engine |
+| Translating | GPU, after hearing | GPU, side by side with hearing |
+| Word lookup | CPU | CPU |
+| Voice | CPU | CPU |
+
+### Race the two on your Mac
 
 ```bash
 call-captions bench ~/Downloads/voicemail.m4a
 ```
 
-It puts the same sentences of your recording through Parakeet, Qwen3-ASR and Kotoba-Whisper,
-translates each, and prints the time per sentence, so you can pick the fastest one that's still
-right. The first run downloads the models you don't have yet (Qwen3-ASR is about 2.2 GB). Switch
-with, for example, `--asr qwen3` (or add that line to `options.txt`).
+Plays your recording in real time through the current version (control) and through `--turbo`,
+times each line from the end of speech to the English on screen, then times the word lookup, and
+runs turbo once more while lookups fire every second, to show the lookup doesn't slow it down.
+Add `--models parakeet,parakeet-ane,qwen3,kotoba` to also compare other speech models (first use
+downloads them). If turbo wins, put `--turbo` in `options.txt`.
 
 ## Options
 
 | Option | What it does |
 | --- | --- |
-| `--asr parakeet` | Default. NVIDIA Parakeet TDT-CTC 0.6B Japanese. Fastest; adds punctuation. Spells English names as it hears them. |
+| `--turbo` | Speech recognition on the Neural Engine, translation on the GPU side by side, lines finish at sentence ends. |
+| `--asr parakeet` | Default. NVIDIA Parakeet TDT-CTC 0.6B Japanese on the GPU. Adds punctuation. Spells English names as it hears them. |
+| `--asr parakeet-ane` | The same Parakeet on the Neural Engine (Core ML). `--turbo` uses it. |
 | `--asr qwen3` | Qwen3-ASR 1.7B (8-bit). Most accurate on natural conversation in published tests; slower. |
 | `--asr qwen3-small` | Qwen3-ASR 0.6B (8-bit). Faster, less accurate. |
 | `--asr kotoba` | Kotoba-Whisper v2.0, the default before 1.4.0. |
@@ -156,7 +199,8 @@ with, for example, `--asr qwen3` (or add that line to `options.txt`).
 | `--english-only` | Hide the Japanese lines. |
 | `--no-partials` | Only show finished sentences. |
 | `--end-silence 0.4` | Pause (seconds) that ends a sentence. Default 0.5. Shorter is sooner but can cut sentences in two. |
-| `--early 0.25` | Start the final text after this much pause, before knowing it ends the sentence. Same text, sooner. `0` turns it off. |
+| `--early 0.25` | Start the final text after this much pause, before knowing it ends the sentence. Same text, sooner. `0` turns it off. 0.15 with `--turbo`. |
+| `--no-lookup` | (in `options.txt`) The app doesn't open the word lookup pane. |
 | `--log calls.txt` | Save a transcript (time, Japanese, English). |
 | `--device NAME` | Input to listen on. Default: the first device named BlackHole. |
 | `--list-devices` | Show input devices. |
@@ -178,6 +222,10 @@ guesses the wrong person ("I" vs "you") where Japanese leaves it out. Names are 
 for recognition.
 
 The models are downloaded from Hugging Face during setup and are covered by their own licenses.
+The word lookup uses the [JMdict](https://www.edrdg.org/wiki/index.php/JMdict-EDICT_Dictionary_Project)
+dictionary files, the property of the Electronic Dictionary Research and Development Group, used in
+conformance with the Group's [licence](https://www.edrdg.org/edrdg/licence.html) (CC BY-SA 4.0); they
+are downloaded from EDRDG during setup.
 
 ## Troubleshooting
 
@@ -214,8 +262,8 @@ device (so you can reinstall or roll back without setting up again).
 
 ## Versions and rollback
 
-The latest version is 1.5.0: the voice is on by default, Parakeet recognizes the speech (1.4.0),
-and lines start early at a pause (1.3.0). Version 1.2.0 is a
+The latest version is 1.6.0: the word lookup pane, `--turbo` and the control-vs-turbo bench. The
+voice is on by default since 1.5.0. Version 1.2.0 is a
 milestone: confirmed working and kept installable. To stay on your current version,
 `brew pin call-captions`. If an update ever breaks something:
 
