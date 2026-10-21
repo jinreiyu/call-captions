@@ -3,6 +3,12 @@
 Milestones are versions confirmed working on a real Mac. Each is kept installable for rollback
 as `brew install jinreiyu/tap/call-captions-X.Y.Z` and on the `milestone/vX.Y.Z` branch.
 
+## 1.5.1
+
+- `call-captions help` (also `-help`, `-h`, `--help`) now explains the features in plain words:
+  what it does, how to use and check it, the voice, speed and accuracy, setup and rollback.
+  `call-captions help all` adds every option.
+
 ## 1.5.0
 
 Not a milestone yet: roll back with `call-captions-1.2.0` if anything is wrong.

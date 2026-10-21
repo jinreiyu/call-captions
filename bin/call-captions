@@ -8,7 +8,7 @@
 # removed without asking.
 set -euo pipefail
 
-VERSION="1.5.0"
+VERSION="1.5.1"
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 settings="${CALL_CAPTIONS_HOME:-$HOME/call-captions}"
 py="$here/venv/bin/python"
@@ -22,21 +22,58 @@ export PATH="$brew_prefix/bin:$PATH"
 export HF_HOME="$here/hf" HF_HUB_DISABLE_TELEMETRY=1
 
 usage() {
+  local b="" r=""
+  if [[ -t 1 ]]; then b=$'\033[1m' r=$'\033[0m'; fi
   cat <<EOF
-call-captions $VERSION: live Japanese -> English captions for calls, on your Mac.
+${b}Call Captions $VERSION${r}: live English for Japanese phone calls, all on your Mac.
 
-  call-captions                  caption the call and say the English in your left ear
-  call-captions --no-speak       captions only, no voice
-  call-captions test-voice       hear the voice once, to check it works
-  call-captions --file AUDIO     caption an audio file instead, to test
-  call-captions bench AUDIO      compare the speech models' speed and text on your own audio
+${b}WHAT IT DOES${r}
+  - Shows what the caller says: Japanese in cyan, the English below it (yellow ➜).
+  - Says the English in your LEFT ear with a robot voice; the call plays in your RIGHT ear.
+  - Runs entirely on this Mac. Nothing is sent anywhere; the caller hears a normal call.
+  - Text appears within about a second after they pause. Gray lines are drafts while they talk.
+
+${b}USE IT${r}
+  call-captions                  start it BEFORE the call (or open "Call Captions" in Applications)
+  Ctrl+C                         stop; the Mac's sound goes back to normal
+  Take the call on this Mac (iPhone calls through Continuity) with your headset on.
+
+${b}CHECK IT${r}
+  call-captions test-voice       hear "Left ear…" on the left and "Right ear…" on the right
+  call-captions --file AUDIO     run a recording through it, e.g. a voicemail
+  call-captions bench AUDIO      time each speech model on your recording, to pick the fastest
+
+${b}VOICE${r}
+  --no-speak                     captions only, no voice
+  --speak mix                    the call in both ears, the English added on the left
+  --voice Samantha               a clearer voice instead of the robot (all voices: say -v '?')
+  --rate 280                     talk faster, in words per minute (default 240)
+  --voice-volume 1.5             louder voice, 0 to 2 (default 1)
+  Headphones only: on speakers the voice turns itself off so the caller can't hear it.
+
+${b}SPEED AND ACCURACY${r}
+  --asr qwen3                    more accurate speech recognition, a bit slower
+                                 (default: parakeet, the fastest)
+  --hint "株式会社サンプル 山田" names you expect (works with --asr qwen3 or --asr kotoba)
+  --end-silence 0.4              end sentences at a shorter pause: sooner, may split sentences
+  --english-only                 hide the Japanese lines
+  --log calls.txt                save a transcript
+
+${b}USE AN OPTION EVERY TIME${r}
+  Put it in $settings/options.txt, one per line.
+  The app and call-captions both read it.
+
+${b}SETUP${r}
   call-captions setup            check everything and fix what's missing
-  call-captions audio            choose where you hear the call (headset or speakers)
-  call-captions app              rebuild "Call Captions.app" in Applications
-  call-captions uninstall        remove everything (BlackHole is left alone)
-  call-captions help             this text plus every caption option
+  call-captions audio            choose the headset you hear calls on
+  call-captions app              rebuild the "Call Captions" app in Applications
+  call-captions version          show the version
+  call-captions uninstall        remove everything (BlackHole is never touched)
 
-Settings used by the app: $settings/options.txt
+${b}IF AN UPDATE BREAKS SOMETHING${r}
+  brew uninstall call-captions && brew install jinreiyu/tap/call-captions-1.2.0
+
+  call-captions help all         every option, with details
 EOF
 }
 
@@ -346,10 +383,11 @@ case "${1:-}" in
   test-voice) first_run; voice_env; shift; "$py" "$here/live_captions.py" --test-voice "$@" ;;
   uninstall) uninstall ;;
   version | --version) echo "call-captions $VERSION" ;;
-  help | -h | --help)
+  help | -h | -help | --help)
     usage
-    if [[ -x "$py" ]]; then echo; "$py" "$here/live_captions.py" --help; fi
+    if [[ "${2:-}" == all && -x "$py" ]]; then echo; "$py" "$here/live_captions.py" --help; fi
     ;;
+  --help-all) usage; if [[ -x "$py" ]]; then echo; "$py" "$here/live_captions.py" --help; fi ;;
   *)
     first_run
     run_captions "$@"

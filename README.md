@@ -161,7 +161,8 @@ with, for example, `--asr qwen3` (or add that line to `options.txt`).
 | `--device NAME` | Input to listen on. Default: the first device named BlackHole. |
 | `--list-devices` | Show input devices. |
 
-`call-captions help` lists them all.
+`call-captions help` (or `-help`) explains every feature in plain words; `call-captions help all`
+lists every option.
 
 ## How it works
 
