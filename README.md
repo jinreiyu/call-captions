@@ -175,17 +175,21 @@ Engine model can't load, it falls back to the GPU version by itself.
 call-captions bench ~/Downloads/voicemail.m4a
 ```
 
-Plays your recording in real time through the current version (control) and through `--turbo`,
-times each line from the end of speech to the English on screen, then times the word lookup, and
-runs turbo once more while lookups fire every second, to show the lookup doesn't slow it down.
+Plays your recording in real time through three set-ups and times each line from the end of
+speech to the English on screen: **control** (the current version), **quick** (the same, plus
+`--quick-end`: a line finishes as soon as a sentence ends) and **turbo** (`--turbo`: quick plus the
+Neural Engine). Each runs in a process of its own, like a real session, so if one crashes the bench
+says where and carries on. Then it times the word lookup and runs the fastest set-up again while
+lookups fire every second, to show the lookup doesn't slow it down.
 Add `--models parakeet,parakeet-ane,qwen3,kotoba` to also compare other speech models (first use
-downloads them). If turbo wins, put `--turbo` in `options.txt`.
+downloads them). Put the winner (`--quick-end` or `--turbo`) in `options.txt`.
 
 ## Options
 
 | Option | What it does |
 | --- | --- |
 | `--turbo` | Speech recognition's encoder on the Neural Engine, and lines finish at sentence ends. |
+| `--quick-end` | A line finishes as soon as a sentence ends (。？) instead of after the full pause. Any speech model. |
 | `--asr parakeet` | Default. NVIDIA Parakeet TDT-CTC 0.6B Japanese on the GPU. Adds punctuation. Spells English names as it hears them. |
 | `--asr parakeet-ane` | The same Parakeet on the Neural Engine (Core ML). `--turbo` uses it. |
 | `--asr qwen3` | Qwen3-ASR 1.7B (8-bit). Most accurate on natural conversation in published tests; slower. |

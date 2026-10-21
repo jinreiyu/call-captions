@@ -3,6 +3,18 @@
 Milestones are versions confirmed working on a real Mac. Each is kept installable for rollback
 as `brew install jinreiyu/tap/call-captions-X.Y.Z` and on the `milestone/vX.Y.Z` branch.
 
+## 1.6.2
+
+Not a milestone yet: roll back with `call-captions-1.2.0` if anything is wrong.
+
+- `--turbo` still crashed (segmentation fault) on the Mac in 1.6.1 as its race started, so the
+  second thread wasn't the cause. `bench` now runs each race in a process of its own, as a real
+  session runs, and prints where a crash happened (Python's faulthandler) instead of stopping.
+- `bench` races three set-ups: control, **quick** (Parakeet on the GPU plus `--quick-end`: a line
+  finishes as soon as a sentence ends, no Neural Engine) and turbo.
+- `--quick-end` on its own also starts the early transcription at 0.15 s.
+- Closing the word lookup now waits until its two CPU models have actually stopped.
+
 ## 1.6.1
 
 Not a milestone yet: roll back with `call-captions-1.2.0` if anything is wrong.

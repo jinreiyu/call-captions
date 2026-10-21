@@ -11,6 +11,7 @@ Nothing is sent over the network; models are downloaded from Hugging Face once.
 """
 
 import argparse
+import faulthandler
 import gc
 import json
 import os
@@ -959,10 +960,18 @@ class BenchScreen(Screen):
         pass
 
 
-def race(args, asr, mt, turbo, pcm, during=None):
+# The live races bench runs: (speech model, finish lines at sentence ends, what it is)
+RACES = {
+    "control": ("parakeet", False, "version 1.5: Parakeet on the GPU, a line after the full 0.5 s pause"),
+    "quick": ("parakeet", True, "Parakeet on the GPU; a line finishes as soon as a sentence ends"),
+    "turbo": ("parakeet-ane", True, "Parakeet's encoder on the Neural Engine; a line finishes as soon as a sentence ends"),
+}
+
+
+def race(args, asr, mt, fast, pcm):
     """Play the recording in real time through the whole live pipeline, like a call, and time
     each line from the moment the person stopped talking to the English on screen."""
-    overrides = dict(no_partials=False, quick_end=turbo, early=0.15 if turbo else 0.25)
+    overrides = dict(no_partials=False, quick_end=fast, early=0.15 if fast else 0.25)
     c = Captioner(argparse.Namespace(**{**vars(args), **overrides}), asr, mt, BenchScreen())
     lines = []
     c.on_line = lines.append
@@ -978,13 +987,57 @@ def race(args, asr, mt, turbo, pcm, during=None):
         q.put(None)
 
     threading.Thread(target=feed, daemon=True).start()
-    if during:
-        threading.Thread(target=during, daemon=True).start()
     c.run(q)
     for line in lines:
         line["latency"] = line["shown"] - (t0 + line["end_s"])
         print(f"  {line['latency']:5.2f}s  {YELLOW}➜ {line['en']}{RESET}  {DIM}{line['ja']}{RESET}", flush=True)
     return lines
+
+
+def race_child(args):
+    """One live race (--race MODE) in a process of its own, set up the way a real session is, so a
+    crash ends only that race and the bench can say where it happened."""
+    asr_name, fast, _ = RACES[args.race]
+    pcm = read_file(args.bench)
+    mt = None
+    if args.mt != "none":
+        mt = Translator(args.mt)
+        mt("もしもし、聞こえますか？")
+    asr = make_asr(asr_name, "")
+    asr(np.zeros(SR, np.float32))
+    print("RACE_START", flush=True)
+    lines = race(args, asr, mt, fast, pcm)
+    print("RACE_JSON " + json.dumps(lines, ensure_ascii=False), flush=True)
+
+
+def run_race(args, mode, during=None):
+    """Run one race in a child process; its lines, or None (and where it crashed) if it failed."""
+    import subprocess
+
+    print(f"{BOLD}{mode}{RESET} {DIM}({RACES[mode][2]}){RESET}", flush=True)
+    command = [sys.executable, os.path.abspath(__file__), "--race", mode, "--bench", args.bench, "--mt", args.mt]
+    with tempfile.TemporaryFile("w+") as err:
+        proc = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=err, text=True)
+        lines = None
+        for line in proc.stdout:
+            if line.startswith("RACE_START") and during:
+                threading.Thread(target=during, args=(proc,), daemon=True).start()
+            elif line.startswith("RACE_JSON "):
+                lines = json.loads(line[len("RACE_JSON "):])
+            elif line.startswith("  "):
+                print(line, end="", flush=True)
+        proc.wait()
+        if lines is None:
+            err.seek(0)
+            log = [l.rstrip() for l in err.read().splitlines() if l.strip()]
+            start = next((i for i, l in enumerate(log) if l.startswith(("Fatal Python error", "Traceback"))), None)
+            where = log[start:] if start is not None else log[-10:]
+            where = [l for l in where if not l.startswith("Extension modules")]
+            what = "crashed (segmentation fault)" if proc.returncode == -11 else f"stopped (exit {proc.returncode})"
+            print(f"  {YELLOW}! {mode} {what}. Where it happened (send this):{RESET}")
+            for l in where[:40]:
+                print(f"    {l}")
+        return lines
 
 
 def start_lookup():
@@ -1022,26 +1075,20 @@ def bench(args):
     print(f"\n{BOLD}1. Speech models on the same sentences{RESET}")
     models = bench_models(args, utts, mt)
 
-    print(f"\n{BOLD}2. Live race: the recording played in real time, like a call{RESET}")
-    results = {}
-    control_asr = make_asr("parakeet", "")
-    control_asr(np.zeros(SR, np.float32))
-    print(f"{BOLD}control{RESET} {DIM}(version 1.5: Parakeet on the GPU, then translation on the GPU){RESET}", flush=True)
-    results["control"] = race(args, control_asr, mt, False, pcm)
-    del control_asr
+    del mt
     gc.collect()
-    try:
-        turbo_asr = ParakeetANE(ASR_MODELS["parakeet-ane"], "")
-        turbo_asr(np.zeros(SR, np.float32))
-    except Exception as e:
-        turbo_asr = None
-        print(f"{YELLOW}! The Neural Engine model didn't load ({e}); turbo can't be measured{RESET}")
-    if turbo_asr is not None:
-        print(f"{BOLD}turbo{RESET} {DIM}(Parakeet's encoder on the Neural Engine; a line finishes as soon as a sentence ends){RESET}", flush=True)
-        results["turbo"] = race(args, turbo_asr, mt, True, pcm)
+
+    print(f"\n{BOLD}2. Live race: the recording played in real time, like a call{RESET}")
+    print(f"{DIM}   each in a process of its own, as a real session runs{RESET}")
+    results = {}
+    for mode in RACES:
+        lines = run_race(args, mode)
+        if lines:
+            results[mode] = lines
 
     print(f"\n{BOLD}3. Word lookup on the CPU{RESET} {DIM}(dictionary, translation, explanation){RESET}", flush=True)
-    phrases = [l["ja"] for l in results["control"]][:4] or ["伺ってもよろしいですか"]
+    heard = next(iter(results.values()), [])
+    phrases = [l["ja"] for l in heard][:4] or ["伺ってもよろしいですか", "恐れ入りますが"]
     here = os.path.dirname(os.path.abspath(__file__))
     r = subprocess.run([sys.executable, os.path.join(here, "lookup.py"), "--bench", *phrases],
                        capture_output=True, text=True)
@@ -1054,23 +1101,26 @@ def bench(args):
     if r.returncode != 0 and not lookups:
         print(f"{YELLOW}! the lookup didn't run: {(r.stderr or '').strip().splitlines()[-1:]}{RESET}")
 
-    if turbo_asr is not None and lookups:
-        print(f"\n{BOLD}4. turbo again, with a lookup every second on the CPU{RESET}", flush=True)
+    best = next((m for m in ("turbo", "quick") if m in results), None)
+    if best and lookups:
+        print(f"\n{BOLD}4. {best} again, with a lookup every second on the CPU{RESET}", flush=True)
         proc = start_lookup()
 
-        def keep_looking_up():
+        def keep_looking_up(child):
             i = 0
             try:
-                while proc.poll() is None:
+                while proc.poll() is None and child.poll() is None:
                     proc.stdin.write(phrases[i % len(phrases)] + "\n")
                     proc.stdin.flush()
                     i += 1
                     time.sleep(1.0)
             except (OSError, ValueError):
-                pass  # the race is over and the lookup was closed
+                pass  # the lookup was closed
 
         try:
-            results["turbo + lookups"] = race(args, turbo_asr, mt, True, pcm, during=keep_looking_up)
+            lines = run_race(args, best, during=keep_looking_up)
+            if lines:
+                results[f"{best} + lookups"] = lines
         finally:
             try:
                 proc.stdin.close()  # it then stops its models and exits
@@ -1091,10 +1141,10 @@ def bench(args):
         base = base or avg
         gain = f"  {base / avg:4.1f}x sooner than control" if name != "control" else ""
         print(f"  {name:<26} {avg:5.2f} s average  {max(lat):5.2f} s slowest{gain}")
-    if "turbo" in results and "control" in results:
-        same = [a["ja"] == b["ja"] for a, b in zip(results["control"], results["turbo"])]
-        print(f"  {DIM}turbo heard {sum(same)} of {len(same)} sentences exactly like control "
-              f"(compare the lines above){RESET}")
+    for mode in ("quick", "turbo"):
+        if mode in results and "control" in results:
+            same = [a["ja"] == b["ja"] for a, b in zip(results["control"], results[mode])]
+            print(f"  {DIM}{mode} heard {sum(same)} of {len(same)} sentences exactly like control{RESET}")
     if lookups:
         keys = [k for k in lookups[0]]
         print("  lookup (CPU)              " + "  ".join(
@@ -1115,6 +1165,7 @@ def load_asr(args, screen):
 
 
 def main():
+    faulthandler.enable()  # on a crash, print where it happened
     ap = argparse.ArgumentParser(prog="call-captions", description="Live Japanese -> English call captions, fully on-device.")
     ap.add_argument("--device", default="BlackHole", help="input device name (substring) or index [BlackHole]")
     ap.add_argument("--list-devices", action="store_true", help="list input devices and exit")
@@ -1146,7 +1197,8 @@ def main():
                     help="Parakeet's encoder on the Neural Engine (about 3x faster), and a line finishes as soon as "
                          "a sentence ends (。？). Compare with: call-captions bench")
     ap.add_argument("--quick-end", action="store_true",
-                    help="finish a line at the short --early pause when it ends a sentence (part of --turbo)")
+                    help="finish a line as soon as a sentence ends (。？), after a 0.15 s pause, on any speech "
+                         "model (part of --turbo)")
     ap.add_argument("--end-silence", type=float, default=0.5, help="pause (s) that ends an utterance [0.5]")
     ap.add_argument("--early", type=float,
                     help="start the final transcription after this pause (s), before it is known to end the "
@@ -1158,9 +1210,14 @@ def main():
     ap.add_argument("--prefetch", action="store_true", help="download and warm up the models, then exit")
     ap.add_argument("--download-only", action="store_true", help="download the models without loading them, then exit")
     ap.add_argument("--bench", metavar="AUDIO", help="compare the speech models on an audio file, then exit")
+    ap.add_argument("--race", choices=list(RACES), help=argparse.SUPPRESS)  # bench runs each race this way
     ap.add_argument("--models", default="parakeet,parakeet-ane",
                     help="speech models for --bench, e.g. parakeet,parakeet-ane,qwen3,kotoba [parakeet,parakeet-ane]")
     args = ap.parse_args()
+
+    if args.race:
+        race_child(args)
+        return
 
     if args.bench:
         bench(args)
@@ -1213,7 +1270,7 @@ def main():
         if args.asr == "parakeet":
             args.asr = "parakeet-ane"
     if args.early is None:
-        args.early = 0.15 if args.turbo else 0.25
+        args.early = 0.15 if args.quick_end else 0.25
     asr = load_asr(args, screen)
     if args.hint and isinstance(asr, (ParakeetASR, ParakeetANE)):
         screen.info("  --hint has no effect on Parakeet; --asr qwen3 or --asr kotoba use it")

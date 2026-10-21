@@ -229,9 +229,12 @@ The Mac has three separate engines: CPU, GPU and Neural Engine. `--turbo`:
   junk.
 
 `call-captions bench AUDIO` measures all of it on the Mac itself: the speech models on the same
-sentences; a live race where the recording plays in real time through control and through turbo,
-timing each line from the end of speech to the English on screen; the word lookup; and turbo again
-while a lookup runs every second.
+sentences; a live race where the recording plays in real time through control, quick (control plus
+`--quick-end`) and turbo, timing each line from the end of speech to the English on screen; the
+word lookup; and the fastest set-up again while a lookup runs every second. Since 1.6.2 each race
+runs in a child process set up like a real session (`--race MODE`), with Python's faulthandler on:
+1.6.0 and 1.6.1 both crashed with a bare segmentation fault as the turbo race started, which said
+nothing about where. Now a crash ends only that race and prints the Python stack.
 
 ### Word lookup (1.6.0)
 

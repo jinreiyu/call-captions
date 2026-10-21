@@ -8,7 +8,7 @@
 # removed without asking.
 set -euo pipefail
 
-VERSION="1.6.1"
+VERSION="1.6.2"
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 settings="${CALL_CAPTIONS_HOME:-$HOME/call-captions}"
 py="$here/venv/bin/python"
@@ -59,8 +59,8 @@ ${b}VOICE${r}
   Headphones only: on speakers the voice turns itself off so the caller can't hear it.
 
 ${b}SPEED AND ACCURACY${r}
-  --turbo                        speech recognition on the Neural Engine (about 3.5x faster), and
-                                 a line shows as soon as a sentence ends
+  --quick-end                    a line shows as soon as a sentence ends, not after the full pause
+  --turbo                        --quick-end plus speech recognition on the Neural Engine
   --asr qwen3                    more accurate speech recognition, a bit slower
                                  (default: parakeet, the fastest)
   --hint "株式会社サンプル 山田" names you expect (works with --asr qwen3 or --asr kotoba)

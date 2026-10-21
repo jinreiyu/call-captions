@@ -202,7 +202,7 @@ def model_path(repo_file):
 # Runs llama-server and stops it as soon as this program is gone, however it ended (even
 # killed outright), so a model can never be left running in the background.
 WATCHDOG = (
-    '"$@" & srv=$!; trap \'kill $srv 2>/dev/null; exit 0\' TERM HUP INT; '
+    '"$@" & srv=$!; trap \'kill $srv 2>/dev/null; wait $srv; exit 0\' TERM HUP INT; '
     'while kill -0 "$OWNER" 2>/dev/null && kill -0 $srv 2>/dev/null; do sleep 1; done; '
     'kill $srv 2>/dev/null'
 )
