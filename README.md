@@ -155,7 +155,20 @@ Homebrew, the program with its Python and models. Homebrew also removes helpers 
 anything you installed yourself stays. It never touches BlackHole or audio devices you made yourself.
 
 Running only `brew uninstall call-captions` removes the program, Python and models too, and
-leaves just the small app launcher and `~/call-captions/options.txt`.
+leaves the small app launcher, your settings in `~/call-captions` and the Call Captions Output
+device (so you can reinstall or roll back without setting up again).
+
+## Versions and rollback
+
+Version 1.2.0 is a milestone: confirmed working and kept installable. To stay on your current
+version, `brew pin call-captions`. If an update ever breaks something:
+
+```bash
+brew uninstall call-captions && brew install jinreiyu/tap/call-captions-1.2.0 && call-captions
+```
+
+Your settings and sound routing are kept. See [CHANGELOG.md](CHANGELOG.md) for versions and
+[docs/PROJECT.md](docs/PROJECT.md) for how everything works.
 
 ## License
 
