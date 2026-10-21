@@ -348,8 +348,9 @@ removes all of them.
 
 Does what Homebrew isn't allowed to:
 
-- Creates `~/call-captions/options.txt` (the app's settings), using the BlackHole already on
-  the Mac for `--device`.
+- Creates `~/call-captions/options.txt` (your standing options), using the BlackHole already on
+  the Mac for `--device`. `call-captions` passes its path to `live_captions.py`
+  (`CALL_CAPTIONS_OPTIONS`), which puts its lines before the typed options, so typed ones win.
 - Builds `Call Captions.app` in /Applications (or ~/Applications). The app is a small launcher
   that opens iTerm2 or Terminal running `call-captions` with the options, so it uses the
   terminal's microphone permission. Opening it again while it runs brings the window forward.

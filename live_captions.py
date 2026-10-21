@@ -1475,7 +1475,18 @@ def main():
     ap.add_argument("--neural-engine-helper", metavar="REPO", help=argparse.SUPPRESS)  # see NeuralEngineHelper
     ap.add_argument("--models", default="parakeet,parakeet-ane",
                     help="speech models for --bench, e.g. parakeet,parakeet-ane,qwen3,kotoba [parakeet,parakeet-ane]")
-    args = ap.parse_args()
+    argv = sys.argv[1:]
+    options = os.environ.pop("CALL_CAPTIONS_OPTIONS", "")  # options.txt, set by call-captions
+    if os.path.isfile(options):
+        import shlex
+
+        with open(options, encoding="utf-8") as f:
+            lines = [line for line in f if not line.lstrip().startswith("#")]
+        try:
+            argv = [a for line in lines for a in shlex.split(line)] + argv  # typed options win
+        except ValueError as e:
+            ap.error(f"{options}: {e}")
+    args = ap.parse_args(argv)
     if not 0.5 <= args.voice_speed <= 3:
         ap.error("--voice-speed goes from 0.5 to 3")
 

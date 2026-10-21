@@ -1,7 +1,7 @@
 #!/bin/bash
-# Call Captions.app: opens iTerm2 (or Terminal) running `call-captions` with the options in
-# ~/call-captions/options.txt. The captioner runs inside the terminal so it uses the terminal's
-# microphone permission, which reading BlackHole needs. (It shows word lookups itself.)
+# Call Captions.app: opens iTerm2 (or Terminal) running `call-captions`, which reads the options
+# in ~/call-captions/options.txt itself. The captioner runs inside the terminal so it uses the
+# terminal's microphone permission, which reading BlackHole needs.
 # `call-captions` fills in the two paths below when it builds the app.
 cli="__CLI__"
 settings="__SETTINGS__"
@@ -32,12 +32,8 @@ if pgrep -f "call-captions/.*/venv/bin/python .*live_captions.py" >/dev/null; th
   exit 0
 fi
 
-opts=""
-if [[ -f "$settings/options.txt" ]]; then
-  opts="$(grep -v '^[[:space:]]*#' "$settings/options.txt" | tr '\n' ' ')"
-fi
-printf -v run '%q' "$cli"
-cmd="clear; $run $opts"
+printf -v run 'CALL_CAPTIONS_HOME=%q %q' "$settings" "$cli"
+cmd="clear; $run"
 
 if [[ "$term" == com.googlecode.iterm2 ]]; then
   osascript - "$cmd" <<'EOF'

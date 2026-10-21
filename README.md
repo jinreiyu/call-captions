@@ -85,14 +85,15 @@ asks to let Call Captions control the terminal and the terminal to use the micro
   sentence. The final version replaces both.
 - Make the text bigger with **Cmd +**.
 
-The app reads its options from `~/call-captions/options.txt`, one flag per line, for example:
+Options you want every time go in `~/call-captions/options.txt`, one per line, for example:
 
 ```
 --device "BlackHole 64ch"
---hint "株式会社サンプル 山田"
+--voice-speed 2
 ```
 
-From a terminal it's the same: `call-captions --hint "株式会社サンプル 山田"`.
+`call-captions`, the app and `test-voice` all use it (since 1.9.1; before, only the app did). An
+option you type wins for that run: `call-captions --voice-speed 1.5`.
 
 ### Test before a real call
 

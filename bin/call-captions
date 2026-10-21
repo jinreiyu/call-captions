@@ -8,7 +8,7 @@
 # removed without asking.
 set -euo pipefail
 
-VERSION="1.9.0"
+VERSION="1.9.1"
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 settings="${CALL_CAPTIONS_HOME:-$HOME/call-captions}"
 py="$here/venv/bin/python"
@@ -111,8 +111,8 @@ ${b}CHECK IT${r}
   Problem reports: \$TMPDIR/call-captions-neural-engine.log and call-captions-lookup.log
 
 ${b}USE AN OPTION EVERY TIME${r}
-  Put it in $settings/options.txt, one per line, e.g. --voice Fred
-  The app and call-captions both read it.
+  Put it in $settings/options.txt, one per line, e.g. --voice-speed 2
+  call-captions, the app and test-voice all use it; an option you type wins over it.
 
 ${b}SETUP${r}
   call-captions setup            check everything and fix what's missing
@@ -377,7 +377,7 @@ run_captions() {
   fi
   voice_env
   echo "Call Captions $VERSION"
-  "$py" "$here/live_captions.py" "$@"
+  CALL_CAPTIONS_OPTIONS="$settings/options.txt" "$py" "$here/live_captions.py" "$@"
 }
 
 require_env() {
@@ -442,7 +442,10 @@ case "${1:-}" in
   audio) require_env; prepare_audio --choose ;;
   bench) require_env; shift; "$py" "$here/live_captions.py" --bench "$@" ;;
   lookup) require_env; shift; "$py" "$here/lookup.py" "$@" ;;
-  test-voice) first_run; voice_env; shift; "$py" "$here/live_captions.py" --test-voice "$@" ;;
+  test-voice)
+    first_run; voice_env; shift
+    CALL_CAPTIONS_OPTIONS="$settings/options.txt" "$py" "$here/live_captions.py" --test-voice "$@"
+    ;;
   uninstall) uninstall ;;
   version | --version) echo "call-captions $VERSION" ;;
   help | -h | -help | --help)

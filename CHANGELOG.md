@@ -3,6 +3,14 @@
 Milestones are versions confirmed working on a real Mac. Each is kept installable for rollback
 as `brew install jinreiyu/tap/call-captions-X.Y.Z` and on the `milestone/vX.Y.Z` branch.
 
+## 1.9.1
+
+Not a milestone yet: roll back with `call-captions-1.2.0` if anything is wrong.
+
+- `options.txt` now works when you start `call-captions` in a terminal (and for `test-voice`),
+  as the help said: before, only the app used it (apart from `--device`). An option you type
+  wins over it. The app now leaves reading it to `call-captions`.
+
 ## 1.9.0
 
 Not a milestone yet: roll back with `call-captions-1.2.0` if anything is wrong.
