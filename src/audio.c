@@ -13,12 +13,19 @@
 //                                                   create or update "Call Captions Output";
 //                                                   prints "created" or "unchanged"
 //   call-captions-audio remove-multi                remove "Call Captions Output"
+//   call-captions-audio monitor HEAR_UID [BLACKHOLE_UID]
+//                                                   play speech from stdin in your left ear; with
+//                                                   BLACKHOLE_UID, play BlackHole in your right ear
+//                                                   (see cmd_monitor)
 
 #include <CoreAudio/CoreAudio.h>
 #include <CoreFoundation/CoreFoundation.h>
+#include <stdatomic.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #define MULTI_UID "local.callcaptions.multioutput"
 #define MULTI_NAME "Call Captions Output"
@@ -69,6 +76,9 @@ static const char *kind_of(AudioObjectID dev) {
         case kAudioDeviceTransportTypeBluetoothLE: return "bluetooth";
         case kAudioDeviceTransportTypeVirtual: return "virtual";
         case kAudioDeviceTransportTypeAggregate: return "aggregate";
+        case kAudioDeviceTransportTypeHDMI:
+        case kAudioDeviceTransportTypeDisplayPort: return "display";
+        case kAudioDeviceTransportTypeAirPlay: return "airplay";
         default: return "other";
     }
 }
@@ -241,6 +251,207 @@ static int cmd_remove_multi(void) {
     return 0;
 }
 
+// ---- monitor: the English in one ear, the call in the other ----------------------------------
+//
+// monitor HEAR_UID: plays speech read from stdin in the left channel of HEAR_UID (the right
+// channel stays silent, for the call to play there through "Call Captions Output").
+// monitor HEAR_UID BLACKHOLE_UID: also plays what reaches BlackHole in the right channel. With the
+// Mac's sound output set to BlackHole, you hear the call only in your right ear and the English
+// only in your left. This uses a private aggregate device (your headset keeps the clock, BlackHole
+// follows with drift correction) that only this process sees and that goes away when it exits.
+//
+// Prints "ready RATE" once sound is playing. stdin carries little-endian int32 N followed by N
+// float32 mono samples at RATE; N = 0 drops speech that hasn't played yet. Exits when stdin closes.
+
+#define RING_SIZE (1u << 21) // samples of queued speech, about 40 s at 48 kHz
+
+typedef struct {
+    float *ring;
+    _Atomic uint64_t written; // samples written by the stdin reader
+    _Atomic uint64_t played;  // samples played by the audio thread
+    _Atomic uint64_t drop_to; // speech before this sample is skipped
+    UInt32 call_buffer;       // input buffer holding BlackHole, or UINT32_MAX for none
+} Monitor;
+
+static UInt32 stream_count(AudioObjectID dev, AudioObjectPropertyScope scope) {
+    AudioObjectPropertyAddress a = addr(kAudioDevicePropertyStreams, scope);
+    UInt32 size = 0;
+    if (AudioObjectGetPropertyDataSize(dev, &a, 0, NULL, &size) != noErr) return 0;
+    return size / sizeof(AudioStreamID);
+}
+
+// Runs on the audio thread: no locks, no allocation, no system calls.
+static OSStatus monitor_io(AudioObjectID device, const AudioTimeStamp *now, const AudioBufferList *input,
+                           const AudioTimeStamp *inputTime, AudioBufferList *output,
+                           const AudioTimeStamp *outputTime, void *context) {
+    (void)device, (void)now, (void)inputTime, (void)outputTime;
+    Monitor *m = context;
+    for (UInt32 b = 0; b < output->mNumberBuffers; b++) {
+        if (output->mBuffers[b].mData) memset(output->mBuffers[b].mData, 0, output->mBuffers[b].mDataByteSize);
+    }
+    // The headset is the first sub-device, so its first output stream is the first buffer.
+    if (output->mNumberBuffers == 0 || !output->mBuffers[0].mData || output->mBuffers[0].mNumberChannels == 0) {
+        return noErr;
+    }
+    float *ear = output->mBuffers[0].mData;
+    UInt32 channels = output->mBuffers[0].mNumberChannels;
+    UInt32 frames = output->mBuffers[0].mDataByteSize / (UInt32)(sizeof(float) * channels);
+
+    const float *call = NULL;
+    UInt32 callChannels = 0, callFrames = 0;
+    if (input && m->call_buffer < input->mNumberBuffers && input->mBuffers[m->call_buffer].mData &&
+        input->mBuffers[m->call_buffer].mNumberChannels > 0) {
+        call = input->mBuffers[m->call_buffer].mData;
+        callChannels = input->mBuffers[m->call_buffer].mNumberChannels;
+        callFrames = input->mBuffers[m->call_buffer].mDataByteSize / (UInt32)(sizeof(float) * callChannels);
+    }
+
+    uint64_t played = atomic_load_explicit(&m->played, memory_order_relaxed);
+    uint64_t dropTo = atomic_load_explicit(&m->drop_to, memory_order_acquire);
+    uint64_t written = atomic_load_explicit(&m->written, memory_order_acquire);
+    if (dropTo > played) played = dropTo;
+    uint64_t queued = written > played ? written - played : 0;
+    UInt32 speech = queued < frames ? (UInt32)queued : frames;
+
+    for (UInt32 i = 0; i < frames; i++) {
+        float voice = i < speech ? m->ring[(played + i) & (RING_SIZE - 1)] : 0.0f;
+        float other = 0.0f;
+        if (call && i < callFrames) {
+            const float *f = call + (size_t)i * callChannels;
+            other = callChannels >= 2 ? 0.5f * (f[0] + f[1]) : f[0];
+        }
+        if (channels >= 2) {
+            ear[(size_t)i * channels] = voice;     // left
+            ear[(size_t)i * channels + 1] = other; // right
+        } else {
+            ear[i] = voice + other; // a mono headset can't separate them
+        }
+    }
+    atomic_store_explicit(&m->played, played + speech, memory_order_release);
+    return noErr;
+}
+
+static int read_full(void *buf, size_t size) {
+    char *p = buf;
+    while (size > 0) {
+        ssize_t n = read(STDIN_FILENO, p, size);
+        if (n <= 0) return -1;
+        p += n;
+        size -= (size_t)n;
+    }
+    return 0;
+}
+
+// Reads speech from stdin into the ring until stdin closes.
+static void read_speech(Monitor *m) {
+    static float chunk[4096];
+    for (;;) {
+        int32_t count = 0;
+        if (read_full(&count, sizeof(count)) != 0 || count < 0) return;
+        if (count == 0) {
+            atomic_store_explicit(&m->drop_to, atomic_load(&m->written), memory_order_release);
+            continue;
+        }
+        while (count > 0) {
+            UInt32 n = count < 4096 ? (UInt32)count : 4096;
+            if (read_full(chunk, n * sizeof(float)) != 0) return;
+            count -= (int32_t)n;
+            uint64_t w = atomic_load_explicit(&m->written, memory_order_relaxed);
+            for (;;) { // wait for room
+                uint64_t p = atomic_load_explicit(&m->played, memory_order_acquire);
+                uint64_t d = atomic_load_explicit(&m->drop_to, memory_order_relaxed);
+                if (d > p) p = d;
+                if (w + n - p <= RING_SIZE) break;
+                usleep(10000);
+            }
+            for (UInt32 i = 0; i < n; i++) m->ring[(w + i) & (RING_SIZE - 1)] = chunk[i];
+            atomic_store_explicit(&m->written, w + n, memory_order_release);
+        }
+    }
+}
+
+static AudioObjectID create_ears_device(const char *hear, const char *blackhole) {
+    int zero = 0, one = 1;
+    CFNumberRef no = CFNumberCreate(NULL, kCFNumberIntType, &zero);
+    CFNumberRef yes = CFNumberCreate(NULL, kCFNumberIntType, &one);
+    CFStringRef hearString = CFStringCreateWithCString(NULL, hear, kCFStringEncodingUTF8);
+    CFStringRef uid = CFStringCreateWithFormat(NULL, NULL, CFSTR("local.callcaptions.ears.%d"), (int)getpid());
+    CFDictionaryRef subs[2] = {sub_device(hear, 0), sub_device(blackhole, 1)};
+    CFArrayRef subList = CFArrayCreate(NULL, (const void **)subs, 2, &kCFTypeArrayCallBacks);
+
+    CFMutableDictionaryRef desc = CFDictionaryCreateMutable(NULL, 0, &kCFTypeDictionaryKeyCallBacks,
+                                                            &kCFTypeDictionaryValueCallBacks);
+    CFDictionarySetValue(desc, CFSTR(kAudioAggregateDeviceNameKey), CFSTR("Call Captions Ears"));
+    CFDictionarySetValue(desc, CFSTR(kAudioAggregateDeviceUIDKey), uid);
+    CFDictionarySetValue(desc, CFSTR(kAudioAggregateDeviceIsPrivateKey), yes); // only this process
+    CFDictionarySetValue(desc, CFSTR(kAudioAggregateDeviceIsStackedKey), no);
+    CFDictionarySetValue(desc, CFSTR(kAudioAggregateDeviceMainSubDeviceKey), hearString);
+    CFDictionarySetValue(desc, CFSTR(kAudioAggregateDeviceSubDeviceListKey), subList);
+
+    AudioObjectID created = kAudioObjectUnknown;
+    OSStatus status = AudioHardwareCreateAggregateDevice(desc, &created);
+
+    CFRelease(desc);
+    CFRelease(subList);
+    CFRelease(subs[0]);
+    CFRelease(subs[1]);
+    CFRelease(uid);
+    CFRelease(hearString);
+    CFRelease(no);
+    CFRelease(yes);
+    if (status != noErr) {
+        fprintf(stderr, "Couldn't set up the ear split (error %d).\n", (int)status);
+        return kAudioObjectUnknown;
+    }
+    CFRunLoopRunInMode(kCFRunLoopDefaultMode, 0.3, false);
+    return created;
+}
+
+static int cmd_monitor(const char *hear, const char *blackhole) {
+    AudioObjectID hearDevice = find_device(hear);
+    if (hearDevice == kAudioObjectUnknown) {
+        fprintf(stderr, "The device to listen on (%s) isn't connected.\n", hear);
+        return 1;
+    }
+    if (blackhole && find_device(blackhole) == kAudioObjectUnknown) {
+        fprintf(stderr, "BlackHole (%s) wasn't found.\n", blackhole);
+        return 1;
+    }
+    Monitor *m = calloc(1, sizeof(Monitor));
+    if (!m || !(m->ring = calloc(RING_SIZE, sizeof(float)))) return 1;
+    m->call_buffer = UINT32_MAX;
+
+    AudioObjectID device = hearDevice, ears = kAudioObjectUnknown;
+    if (blackhole) {
+        ears = create_ears_device(hear, blackhole);
+        if (ears == kAudioObjectUnknown) return 1;
+        device = ears;
+        // Input buffers come sub-device by sub-device: the headset's microphone streams, then BlackHole.
+        m->call_buffer = stream_count(hearDevice, kAudioObjectPropertyScopeInput);
+    }
+
+    AudioObjectPropertyAddress a = addr(kAudioDevicePropertyNominalSampleRate, kAudioObjectPropertyScopeGlobal);
+    Float64 rate = 0;
+    UInt32 size = sizeof(rate);
+    AudioObjectGetPropertyData(device, &a, 0, NULL, &size, &rate);
+    AudioDeviceIOProcID proc = NULL;
+    if (rate <= 0 || AudioDeviceCreateIOProcID(device, monitor_io, m, &proc) != noErr ||
+        AudioDeviceStart(device, proc) != noErr) {
+        fprintf(stderr, "Couldn't start playing to the device you listen on.\n");
+        if (ears != kAudioObjectUnknown) AudioHardwareDestroyAggregateDevice(ears);
+        return 1;
+    }
+    printf("ready %d\n", (int)rate);
+    fflush(stdout);
+
+    read_speech(m);
+
+    AudioDeviceStop(device, proc);
+    AudioDeviceDestroyIOProcID(device, proc);
+    if (ears != kAudioObjectUnknown) AudioHardwareDestroyAggregateDevice(ears);
+    return 0;
+}
+
 int main(int argc, char **argv) {
     if (argc >= 2) {
         const char *cmd = argv[1];
@@ -250,9 +461,10 @@ int main(int argc, char **argv) {
         if (strcmp(cmd, "set-output") == 0 && argc == 3) return cmd_set_output(argv[2]);
         if (strcmp(cmd, "ensure-multi") == 0 && argc == 4) return cmd_ensure_multi(argv[2], argv[3]);
         if (strcmp(cmd, "remove-multi") == 0) return cmd_remove_multi();
+        if (strcmp(cmd, "monitor") == 0 && (argc == 3 || argc == 4)) return cmd_monitor(argv[2], argc == 4 ? argv[3] : NULL);
     }
     fprintf(stderr,
             "usage: call-captions-audio outputs | default-output | default-input | set-output UID |\n"
-            "       ensure-multi HEAR_UID BLACKHOLE_UID | remove-multi\n");
+            "       ensure-multi HEAR_UID BLACKHOLE_UID | remove-multi | monitor HEAR_UID [BLACKHOLE_UID]\n");
     return 2;
 }

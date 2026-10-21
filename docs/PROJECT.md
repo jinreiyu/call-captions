@@ -33,6 +33,22 @@ iPhone call ──► taken on the Mac (Continuity "Calls from iPhone")
 Your own voice goes from your headset mic straight into the call and never reaches BlackHole,
 so only the other person is captioned.
 
+With `--speak` (1.3.0) the routing changes while captions run:
+
+```
+call ──► Mac sound output = BlackHole ──► live_captions.py ──► English text
+                     │                                            │
+                     ▼                                            ▼  macOS `say` (built-in voice)
+          call-captions-audio monitor  ◄──── English audio (stdin) ┘
+          (private aggregate: headset + BlackHole)
+                     │
+                     ▼
+     headset:  left ear = English voice,  right ear = the call
+```
+
+The English goes only to the headset, never into BlackHole or the call, so it is neither
+captioned nor heard by the caller (as long as it's headphones: `--speak` refuses speakers).
+
 ### The models
 
 | Step | Model | Size | License |
@@ -41,6 +57,8 @@ so only the other person is captioned.
 | Japanese speech → text | [Kotoba-Whisper v2.0](https://huggingface.co/kotoba-tech/kotoba-whisper-v2.0), [MLX build](https://huggingface.co/kaiinui/kotoba-whisper-v2.0-mlx) | 0.76B | Apache-2.0 |
 | Japanese → English | [LiquidAI LFM2-350M-ENJP-MT](https://huggingface.co/LiquidAI/LFM2-350M-ENJP-MT) | 0.35B | LFM Open License |
 | Optional speech model | [NVIDIA Parakeet TDT-CTC 0.6B ja](https://huggingface.co/nvidia/parakeet-tdt_ctc-0.6b-ja) (`--asr parakeet`) | 0.6B | CC-BY-4.0 |
+| Optional speech model | [Qwen3-ASR 1.7B / 0.6B](https://huggingface.co/Qwen/Qwen3-ASR-1.7B), [8-bit MLX builds](https://huggingface.co/moona3k/mlx-qwen3-asr-1.7b-8bit) via [mlx-qwen3-asr](https://github.com/moona3k/mlx-qwen3-asr) (`--asr qwen3`, `qwen3-small`) | 1.7B / 0.6B | Apache-2.0 |
+| Spoken English (`--speak`) | The voices built into macOS (`say`) | none | part of macOS |
 | Optional translator | [PLaMo 2 Translate](https://huggingface.co/pfnet/plamo-2-translate) (`--mt plamo`) | 9.5B | PLaMo Community License |
 
 The models are downloaded from Hugging Face during install and are covered by their own
@@ -76,13 +94,80 @@ Rejected along the way:
 - **TurboQuant (KV-cache compression)**: no benefit here. Each sentence is short, so the KV cache
   is tiny, and LFM2 is mostly convolution layers.
 
+### Speed: where the time goes
+
+After the other person stops talking, a line appears after:
+
+1. **The pause that ends a sentence**: `--end-silence`, 0.5 s. Shorter cuts sentences in two at
+   the natural pauses of spoken Japanese, which hurts the translation, so it stays at 0.5 s.
+2. **Speech recognition**: Kotoba-Whisper always processes a 30-second window, however short the
+   sentence, so it costs about the same every time (about 0.8 s on an M4 Mac mini). Parakeet and
+   Qwen3-ASR process only the actual audio.
+3. **Translation**: about 0.1 to 0.3 s with LFM2-ENJP (0.35B).
+4. **Voice** (`--speak`): making the audio with `say` takes about 0.1 to 0.2 s.
+
+Since 1.3.0, steps 2 to 4 start at a 0.25 s pause (`--early`) instead of waiting for the full
+0.5 s. If the pause turns out to end the sentence, the result is used as is: the audio is the
+same, so the text is identical (checked on recorded speech). If they keep talking, it served as an
+in-progress update. Also, in-progress updates no longer start as a pause begins, where one could
+hold up the final text by a whole recognition. With a fast speech model, the English text and
+voice can start about 0.5 s after the person stops.
+
+Published Japanese benchmarks for the speech models (none measured phone audio on MLX, so
+`call-captions bench` measures your own recordings on your Mac):
+
+- [HEROZ, 2026](https://techblog.heroz.jp/entry/2026/08/18/120000), read speech (FLEURS /
+  Common Voice / JSUT character error rate): Parakeet-ja 5.6 / 21.5 / 6.6 %, Kotoba-Whisper v2
+  5.9 / 26.6 / 7.4 %, Qwen3-ASR 1.7B 5.3 / 26.3 / 8.4 %. Parakeet was the fastest of the open
+  models.
+- [Neosophie, 2026](https://neosophie.com/en/blog/20260226-japanese-asr-benchmark), natural
+  conversation from TV and media: Qwen3-ASR 1.7B was the most accurate (14 % CER) and
+  Kotoba-Whisper v2 the least (50 %; it dropped words after fillers such as えっと).
+- [mlx-qwen3-asr](https://github.com/moona3k/mlx-qwen3-asr) on an M4 Pro: Qwen3-ASR 0.6B 8-bit
+  0.10 s for a 2.5 s clip, 1.7B (16-bit) 0.36 s.
+
+In our own test, Parakeet misheard an English company name and stopped early on a long clip
+without pauses (the captioner cuts audio at pauses, which avoids the second problem). So the
+default stays Kotoba-Whisper until a model proves better on real calls; `bench` makes that check
+quick.
+
+Other things considered for speed:
+
+- **A faster runtime than MLX:** on Apple Silicon, MLX on the GPU is the quickest way to run these
+  models from Python. Core ML on the Neural Engine (WhisperKit, FluidAudio) mainly saves power;
+  published numbers don't show it beating MLX for one live stream. The bigger gains are in the
+  type of model (above) and in the pipeline (`--early`).
+- **Neural voices (Kokoro and similar):** more natural, but they compete with the speech and
+  translation models for the GPU and add a model to download. The built-in macOS voices cost
+  nearly nothing and start quickly.
+- **Direct speech-to-speech translation** (for example Meta SeamlessStreaming): one model, but
+  lower translation quality than the two dedicated models here.
+
+### The voice (`--speak`)
+
+- `say -o` makes a WAV at the headset's sample rate for each English line; the captioner sends
+  the samples to `call-captions-audio monitor` over a pipe.
+- The monitor builds a **private** aggregate device (visible only to itself, gone when it exits):
+  headset as clock, BlackHole with drift correction. Its audio callback puts the call (BlackHole)
+  in the right channel and the speech in the left. The callback only copies samples, using a
+  lock-free ring buffer, so it can't stall.
+- `split` (default): the captioner switches the Mac's output to BlackHole once the monitor is
+  running, and back to Call Captions Output when it stops. If the monitor ever exits, the call
+  goes straight back to both ears. `mix`: the output stays Call Captions Output (call in both
+  ears) and the monitor plays only the speech, in the left ear.
+- While a line plays, the next line waits. If an even newer one comes in, the waiting one is
+  skipped, so the voice never falls more than a line behind. The translation made at the early
+  pause is turned into speech right away, so it is often ready before the line is final.
+- `--speak` refuses built-in speakers, displays and AirPlay. Through speakers, the microphone
+  could pass the English into the call.
+
 ### Program layout
 
 | Path | What it is |
 | --- | --- |
 | `live_captions.py` | The captioner: audio input, VAD, speech recognition, translation, terminal display |
 | `bin/call-captions` | The command users run: setup, first run, sound routing, app, uninstall |
-| `src/audio.c` | `call-captions-audio`, a small CoreAudio helper built during `brew install` |
+| `src/audio.c` | `call-captions-audio`, a small CoreAudio helper built during `brew install`: sets up and switches the routing, and plays the voice and the call to each ear (`monitor`) |
 | `app/` | Template for `Call Captions.app` (Info.plist, launcher script, icon) |
 | `requirements.txt` | Python packages |
 
@@ -186,6 +271,16 @@ Development happened in a Linux container without a Mac, so testing was split:
   `-Wall -Wextra`, no warnings; all symbols resolve. Its logic in `call-captions` was tested
   against a stand-in that simulates the Mac's devices, including Ctrl+C restoring the output.
 - **On a real Mac**: version 1.2.0 confirmed working end to end, which made it milestone 1.2.0.
+- **1.3.0** (not yet confirmed on a Mac):
+  - The `monitor` helper was compiled against the macOS 14.5 SDK with no warnings. Its mixing and
+    queueing code was run on Linux with a stand-in for CoreAudio, checking left = speech in
+    order, right = the call, nothing written to BlackHole, dropping speech, and over 4 million
+    samples through the ring buffer.
+  - The voice logic was tested with stand-ins for `say` and the helper: switching the output and
+    switching it back, recovery when the helper dies, refusing speakers, skipping a stale line,
+    reusing a line made in advance, and falling back from a missing voice.
+  - `--early` was run on recorded speech: identical lines with and without it, all of them ready
+    at the pause.
 
 ## Known limits and troubleshooting
 

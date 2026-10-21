@@ -97,19 +97,58 @@ From a terminal it's the same: `call-captions --hint "株式会社サンプル �
 - A recording: `call-captions --file ~/Downloads/voicemail.m4a`
 - Live: run `call-captions` and play a Japanese video, or call someone from the Mac.
 
+## Hear the English in your left ear
+
+```bash
+call-captions --speak
+```
+
+The Mac's built-in voice says each English line in your **left ear**, while the call plays only in
+your **right ear**. It uses the speech built into macOS (free, no download, almost no CPU). The
+English goes only to your headset, never into the call. **Headphones only**: it refuses to speak
+through the Mac's speakers, where your microphone could pass it to the caller.
+
+- `--speak mix` keeps the call in both ears and adds the English on the left.
+- `--voice Samantha` (default) is quick and clear. Any voice from `say -v '?'` works, including
+  the classic robotic ones (`--voice Fred`). Compact voices start fastest.
+- `--rate 220` is the speed in words per minute; faster keeps up better.
+- If they keep talking, the voice skips a line rather than falling behind (the line stays on
+  screen), so it always speaks the newest sentence.
+- To always use it from the app, add `--speak` to `~/call-captions/options.txt`.
+- Set the volume on your headset: while the call is in your right ear only, the Mac's volume
+  keys change BlackHole's level instead.
+
+Try it on a recording: `call-captions --file ~/Downloads/voicemail.m4a --speak`.
+
+### Which speech model is fastest on your Mac
+
+```bash
+call-captions bench ~/Downloads/voicemail.m4a
+```
+
+It puts the same sentences of your recording through Kotoba-Whisper, Parakeet and Qwen3-ASR,
+translates each, and prints the time per sentence, so you can pick the fastest one that's still
+right. The first run downloads the two extra models (about 4.7 GB). Then use it with, for
+example, `--asr parakeet` (or add that line to `options.txt`).
+
 ## Options
 
 | Option | What it does |
 | --- | --- |
 | `--asr kotoba` | Default. Kotoba-Whisper v2.0, Japanese only. |
-| `--asr parakeet` | NVIDIA Parakeet TDT-CTC 0.6B Japanese. Adds punctuation. |
+| `--asr parakeet` | NVIDIA Parakeet TDT-CTC 0.6B Japanese. Fastest; adds punctuation. |
+| `--asr qwen3` | Qwen3-ASR 1.7B (8-bit). Most accurate on natural conversation in published tests. |
+| `--asr qwen3-small` | Qwen3-ASR 0.6B (8-bit). Faster, less accurate. |
 | `--mt lfm2` | Default. LiquidAI LFM2-350M-ENJP-MT. |
 | `--mt plamo` | PLaMo 2 Translate (Preferred Networks), 9.5B, 4-bit, about 5.5 GB. Slower. |
 | `--mt none` | Japanese captions only. |
-| `--hint "..."` | Names you expect; nudges Kotoba-Whisper toward those spellings. |
+| `--hint "..."` | Names you expect; nudges Kotoba-Whisper and Qwen3-ASR toward those spellings. |
+| `--speak` | Say the English in your left ear; the call in your right. `--speak mix`: call in both. |
+| `--voice NAME` / `--rate 220` | Voice and speed (words per minute) for `--speak`. |
 | `--english-only` | Hide the Japanese lines. |
 | `--no-partials` | Only show finished sentences. |
-| `--end-silence 0.4` | Pause (seconds) that ends a sentence. Default 0.5. |
+| `--end-silence 0.4` | Pause (seconds) that ends a sentence. Default 0.5. Shorter is sooner but can cut sentences in two. |
+| `--early 0.25` | Start the final text after this much pause, before knowing it ends the sentence. Same text, sooner. `0` turns it off. |
 | `--log calls.txt` | Save a transcript (time, Japanese, English). |
 | `--device NAME` | Input to listen on. Default: the first device named BlackHole. |
 | `--list-devices` | Show input devices. |
@@ -143,6 +182,10 @@ The models are downloaded from Hugging Face during setup and are covered by thei
 - **Volume booster apps:** apps that boost one app's volume (for example per-app mixers) can
   mute that app's audio when the output is a multi-output device. Leave the calling app at 100%.
 - **"falling behind real time":** add `--no-partials`, or try `--asr parakeet`.
+- **No voice with `--speak`:** check that you hear the call in your right ear; if the voice stops,
+  the call goes back to both ears on its own. `say "test"` in a terminal checks the Mac's voice.
+- **The voice is late:** a faster `--rate`, a compact voice (`--voice Samantha`) or a faster
+  speech model (`call-captions bench`).
 
 ## Uninstall
 
@@ -160,8 +203,9 @@ device (so you can reinstall or roll back without setting up again).
 
 ## Versions and rollback
 
-Version 1.2.0 is a milestone: confirmed working and kept installable. To stay on your current
-version, `brew pin call-captions`. If an update ever breaks something:
+The latest version is 1.3.0, which adds `--speak`, `--early` and Qwen3-ASR. Version 1.2.0 is a
+milestone: confirmed working and kept installable. To stay on your current version,
+`brew pin call-captions`. If an update ever breaks something:
 
 ```bash
 brew uninstall call-captions && brew install jinreiyu/tap/call-captions-1.2.0 && call-captions

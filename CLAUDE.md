@@ -10,6 +10,8 @@ tests and the release process. `CHANGELOG.md` lists versions and milestones.
   details from the owner's Mac. Use placeholders such as `株式会社サンプル 山田` in examples.
 - **Never break BlackHole.** Never install a second BlackHole when one exists, never remove one,
   never change its settings. Other audio, recording or streaming apps may depend on it.
+- **The voice (`--speak`) must never reach the call.** It plays only to the headset, never into
+  BlackHole or Call Captions Output, and refuses speakers. Keep it that way.
 - **Keep rollback working.** Before changing behaviour, the latest milestone must stay
   installable (`call-captions-X.Y.Z` formula in jinreiyu/homebrew-tap, pinned to the
   `milestone/vX.Y.Z` branch). Don't rewrite or delete milestone branches.

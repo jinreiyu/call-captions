@@ -3,18 +3,22 @@
 
 Pipeline:  call audio (BlackHole loopback, a mic, or a file)
            -> Silero VAD (cuts speech into utterances)
-           -> Japanese-only speech recognizer on MLX (Kotoba-Whisper or NVIDIA Parakeet-ja)
+           -> Japanese speech recognizer on MLX (Kotoba-Whisper, NVIDIA Parakeet-ja or Qwen3-ASR)
            -> Japanese->English-only translation model on MLX (LiquidAI LFM2-350M-ENJP-MT)
-           -> terminal
+           -> terminal, and with --speak the Mac's built-in voice in your left ear
 
 Nothing is sent over the network; models are downloaded from Hugging Face once.
 """
 
 import argparse
+import gc
+import os
 import queue
 import re
 import shutil
+import struct
 import sys
+import tempfile
 import threading
 import time
 import unicodedata
@@ -31,6 +35,8 @@ FRAME_S = FRAME / SR
 ASR_MODELS = {
     "kotoba": "kaiinui/kotoba-whisper-v2.0-mlx",  # Kotoba-Whisper v2.0, distilled for Japanese
     "parakeet": "mlx-community/parakeet-tdt_ctc-0.6b-ja",  # NVIDIA Parakeet TDT-CTC 0.6B Japanese
+    "qwen3": "moona3k/mlx-qwen3-asr-1.7b-8bit",  # Alibaba Qwen3-ASR 1.7B, 8-bit
+    "qwen3-small": "moona3k/mlx-qwen3-asr-0.6b-8bit",  # Alibaba Qwen3-ASR 0.6B, 8-bit
     "cpu": "kotoba-tech/kotoba-whisper-v2.0-faster",  # same Kotoba model via faster-whisper, for non-Mac testing
 }
 # Japanese<->English-only translation models.
@@ -90,6 +96,17 @@ class ParakeetASR:
         return self.model.generate(mel)[0].text.strip()
 
 
+class QwenASR:
+    def __init__(self, repo, hint):
+        from mlx_qwen3_asr import Session
+
+        self.session = Session(repo)
+        self.hint = hint or ""
+
+    def __call__(self, audio, final=True):
+        return self.session.transcribe(audio, language="Japanese", context=self.hint).text.strip()
+
+
 class FasterWhisperASR:
     def __init__(self, name, hint):
         from faster_whisper import WhisperModel
@@ -114,6 +131,8 @@ def make_asr(choice, hint):
     repo = ASR_MODELS.get(choice, choice)
     if "parakeet" in repo:
         return ParakeetASR(repo, hint)
+    if "qwen3-asr" in repo.lower():
+        return QwenASR(repo, hint)
     return WhisperASR(repo, hint)
 
 
@@ -237,10 +256,11 @@ class Screen:
                 sys.stdout.write(f"{DIM}{stamp}{RESET}  {CYAN}{ja}{RESET}\n")
             sys.stdout.flush()
 
-    def final_en(self, ja, en, asr_s, mt_s):
+    def final_en(self, ja, en, asr_s, mt_s, early=False):
         with self.lock:
             self._clear_partial()
-            timing = f"  {DIM}(asr {asr_s:.2f}s · mt {mt_s:.2f}s){RESET}" if self.show_timing else ""
+            when = " · early" if early else ""  # done during the pause, before it was known to end
+            timing = f"  {DIM}(asr {asr_s:.2f}s · mt {mt_s:.2f}s{when}){RESET}" if self.show_timing else ""
             if en:
                 sys.stdout.write(f"          {BOLD}{YELLOW}➜ {en}{RESET}{timing}\n\n")
             else:
@@ -255,6 +275,232 @@ class Screen:
             self._clear_partial()
             sys.stdout.write(f"{DIM}{msg}{RESET}\n")
             sys.stdout.flush()
+
+
+# ---------------------------------------------------------------- spoken English
+
+
+def read_wav(path):
+    """Mono float32 samples and the sample rate of a 16-bit or float WAV file."""
+    with open(path, "rb") as f:
+        data = f.read()
+    if data[:4] != b"RIFF" or data[8:12] != b"WAVE":
+        raise ValueError("not a WAV file")
+    pos, fmt, pcm = 12, None, b""
+    while pos + 8 <= len(data):
+        chunk, size = data[pos : pos + 4], int.from_bytes(data[pos + 4 : pos + 8], "little")
+        body = data[pos + 8 : pos + 8 + size]
+        if chunk == b"fmt ":
+            tag, channels, rate = struct.unpack_from("<HHI", body)
+            bits = struct.unpack_from("<H", body, 14)[0]
+            if tag == 0xFFFE:  # WAVE_FORMAT_EXTENSIBLE keeps the real format in its sub-format
+                tag = struct.unpack_from("<H", body, 24)[0]
+            fmt = tag, channels, rate, bits
+        elif chunk == b"data":
+            pcm = body
+        pos += 8 + size + (size & 1)
+    if fmt is None:
+        raise ValueError("WAV file without a format")
+    tag, channels, rate, bits = fmt
+    if (tag, bits) == (1, 16):
+        x = np.frombuffer(pcm[: len(pcm) // 2 * 2], "<i2").astype(np.float32) / 32768
+    elif (tag, bits) == (3, 32):
+        x = np.frombuffer(pcm[: len(pcm) // 4 * 4], "<f4").astype(np.float32)
+    else:
+        raise ValueError(f"unsupported WAV format {tag}/{bits}-bit")
+    return x[: len(x) // channels * channels].reshape(-1, channels).mean(axis=1), rate
+
+
+class Voice:
+    """Says each English line in your left ear with the Mac's built-in speech (`say`).
+
+    split: the call plays only in your right ear. The Mac's sound output becomes BlackHole, and
+           call-captions-audio plays BlackHole to your right ear and the English to your left.
+    mix:   the call keeps playing in both ears through "Call Captions Output"; the English is
+           added in your left ear.
+    The English only goes to your headset, never into BlackHole or the call.
+    """
+
+    def __init__(self, mode, voice, wpm, volume, screen):
+        import subprocess
+
+        self._sp = subprocess
+        self.screen, self.voice, self.wpm, self.gain = screen, voice, wpm, volume
+        self.audio = os.environ.get("CALL_CAPTIONS_AUDIO", "")
+        hear = os.environ.get("CALL_CAPTIONS_HEAR", "")
+        blackhole = os.environ.get("CALL_CAPTIONS_BLACKHOLE", "")
+        if not (shutil.which("say") and os.access(self.audio, os.X_OK) and hear and (blackhole or mode == "mix")):
+            sys.exit("--speak works on a Mac, started with the call-captions command after its sound setup.")
+        self.hear_name = self._check_headphones(hear)
+        self.previous = self._audio("default-output").strip()
+        command = [self.audio, "monitor", hear] + ([blackhole] if mode == "split" else [])
+        # Its own session, so Ctrl+C reaches only this script, which then stops it in order.
+        self.proc = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, start_new_session=True)
+        import select
+
+        started = select.select([self.proc.stdout], [], [], 10)[0]
+        ready = self.proc.stdout.readline().split() if started else []
+        if len(ready) != 2 or ready[0] != b"ready":
+            self.proc.kill()
+            sys.exit("Couldn't start the voice (call-captions-audio monitor).")
+        self.rate = int(ready[1])
+        self.switched = False
+        if mode == "split":
+            if self._sp.run([self.audio, "set-output", blackhole]).returncode == 0:
+                self.switched = True
+            else:
+                screen.info("! couldn't move the call to your right ear; it stays in both ears")
+        self.wav = os.path.join(tempfile.mkdtemp(prefix="call-captions-"), "line.wav")
+        self.cond = threading.Condition()
+        self.pending = None  # the newest line to say
+        self.upcoming = None  # a line to get ready ahead of time
+        self.made = {}  # text -> samples made ahead of time
+        self.busy = False  # making or sending a line
+        self.busy_until = 0.0  # when the speech already sent finishes playing
+        self.closed = self.failed = self.warned_slow = False
+        threading.Thread(target=self._run, daemon=True).start()
+        threading.Thread(target=self._watch, daemon=True).start()
+
+    def _audio(self, *args):
+        return self._sp.run([self.audio, *args], capture_output=True, text=True, timeout=10).stdout
+
+    def _check_headphones(self, hear):
+        for line in self._audio("outputs").splitlines():
+            uid, kind, name = (line.split("\t") + ["", ""])[:3]
+            if uid != hear:
+                continue
+            low = name.lower()
+            if "speaker" in low or kind in ("display", "airplay") or (kind == "builtin" and "headphone" not in low):
+                sys.exit(
+                    f"--speak needs headphones: {name} would play the English out loud, where your\n"
+                    "microphone could pass it into the call. Choose your headset with: call-captions audio"
+                )
+            return name
+        sys.exit("The device you hear calls on isn't connected. Choose it with: call-captions audio")
+
+    def prepare(self, text):
+        """Make the audio for a line that is probably about to be said."""
+        with self.cond:
+            if text not in self.made:
+                self.upcoming = text
+                self.cond.notify()
+
+    def say(self, text):
+        with self.cond:
+            self.pending = text
+            self.cond.notify()
+
+    def _synth(self, text):
+        command = ["say", "-r", str(self.wpm), "-o", self.wav, f"--data-format=LEI16@{self.rate}", "-f", "-"]
+        if self.voice:
+            command[1:1] = ["-v", self.voice]
+        r = self._sp.run(command, input=text.encode(), capture_output=True, timeout=30, start_new_session=True)
+        if r.returncode != 0 and self.voice:
+            self.screen.info(f"! the voice {self.voice!r} isn't on this Mac; using the default voice")
+            self.voice = None
+            return self._synth(text)
+        if r.returncode != 0:
+            raise RuntimeError(r.stderr.decode(errors="replace").strip() or "say failed")
+        pcm, rate = read_wav(self.wav)
+        if rate != self.rate:
+            import soxr
+
+            pcm = soxr.resample(pcm, rate, self.rate)
+        loud = np.flatnonzero(np.abs(pcm) > 1e-3)
+        if len(loud) == 0:
+            return pcm[:0]
+        start = max(0, loud[0] - self.rate // 100)  # skip the silence `say` starts with
+        return (pcm[start : loud[-1] + 1] * self.gain).astype(np.float32)
+
+    def _run(self):
+        while True:
+            with self.cond:
+                while not self.closed and self.pending is None and self.upcoming is None:
+                    self.cond.wait()
+                if self.closed:
+                    return
+                if self.pending is not None:
+                    text, self.pending, speak = self.pending, None, True
+                    pcm = self.made.pop(text, None)
+                    if self.upcoming == text:
+                        self.upcoming = None
+                    self.busy = True
+                else:
+                    text, self.upcoming, speak, pcm = self.upcoming, None, False, None
+            try:
+                if pcm is None:
+                    t = time.monotonic()
+                    pcm = self._synth(text)
+                    if speak and time.monotonic() - t > 0.6 and not self.warned_slow:
+                        self.warned_slow = True
+                        self.screen.info(f"! the voice took {time.monotonic() - t:.1f}s to make a line; "
+                                         "a compact voice such as --voice Samantha is faster")
+                if speak:
+                    self._play(pcm)
+                else:
+                    with self.cond:
+                        self.made = {text: pcm}
+            except Exception as e:  # keep captioning even if one line can't be said
+                if not self.closed:
+                    self.screen.info(f"! couldn't say a line: {e}")
+            finally:
+                if speak:
+                    with self.cond:
+                        self.busy = False
+
+    def _play(self, pcm):
+        # Let the line before finish. If a newer line comes in meanwhile, skip this one (it stays
+        # on screen) so the voice keeps up with the call instead of falling behind.
+        with self.cond:
+            while not self.closed and self.pending is None and time.monotonic() < self.busy_until - 0.1:
+                self.cond.wait(max(0.01, self.busy_until - 0.1 - time.monotonic()))
+            if self.closed or self.pending is not None or len(pcm) == 0:
+                return
+        try:
+            self.proc.stdin.write(struct.pack("<i", len(pcm)) + pcm.astype("<f4").tobytes())
+            self.proc.stdin.flush()
+        except (OSError, ValueError):
+            return  # _watch reports it
+        self.busy_until = max(time.monotonic(), self.busy_until) + len(pcm) / self.rate
+
+    def _watch(self):
+        self.proc.wait()
+        if self.closed:
+            return
+        self.failed = True
+        if self.switched:
+            self._audio("set-output", self.previous)
+            self.switched = False
+            self.screen.info("! the voice stopped; the call plays in both ears again")
+        else:
+            self.screen.info("! the voice stopped")
+
+    def drain(self, limit=30.0):
+        """Wait for the lines already handed over to be said (used at the end of a file)."""
+        end = time.monotonic() + limit
+        while time.monotonic() < end and not self.failed:
+            with self.cond:
+                idle = self.pending is None and not self.busy
+            if idle and time.monotonic() >= self.busy_until:
+                return
+            time.sleep(0.05)
+
+    def close(self):
+        with self.cond:
+            self.closed = True
+            self.cond.notify_all()
+        if self.switched:  # back to both ears first, so the call never goes quiet
+            self._audio("set-output", self.previous)
+            self.switched = False
+        try:
+            self.proc.stdin.close()
+        except OSError:
+            pass
+        try:
+            self.proc.wait(timeout=3)
+        except self._sp.TimeoutExpired:
+            self.proc.kill()
+        shutil.rmtree(os.path.dirname(self.wav), ignore_errors=True)
 
 
 # ---------------------------------------------------------------- audio sources
@@ -343,24 +589,27 @@ def feed_file(pcm, q, realtime):
 
 
 class Captioner:
-    def __init__(self, args, asr, mt, screen):
+    def __init__(self, args, asr, mt, screen, voice=None):
         import torch
         from silero_vad import load_silero_vad
 
-        self.args, self.asr, self.mt, self.screen = args, asr, mt, screen
+        self.args, self.asr, self.mt, self.screen, self.voice = args, asr, mt, screen, voice
         self._torch = torch
         torch.set_num_threads(1)  # VAD is tiny; extra threads only add overhead
         self.vad = load_silero_vad()
         self.end_frames = int(args.end_silence / FRAME_S)
+        self.early_frames = int(args.early / FRAME_S) if 0 < args.early < args.end_silence else 0
         self.pause_frames = int(0.15 / FRAME_S)
         self.soft_max = int(args.soft_max / FRAME_S)
         self.hard_max = int(args.hard_max / FRAME_S)
         self.min_frames = int(0.25 / FRAME_S)
         self.preroll = deque(maxlen=int(0.3 / FRAME_S))
+        self.utterances = None  # a list here collects the utterances instead (bench)
         self.reset()
 
     def reset(self):
         self.utt, self.in_speech, self.silence, self.voiced = [], False, 0, 0
+        self.early = None  # (frames, result) transcribed at a short pause, in case it ends there
         self.last_partial = self.last_draft = time.monotonic()
 
     def speech_prob(self, frame):
@@ -377,11 +626,13 @@ class Captioner:
                 self.last_partial = self.last_draft = time.monotonic()
             return
         self.utt.append(frame)
+        early = False
         if p >= thr:
             self.silence = 0
             self.voiced += 1
         elif p < thr - 0.15:
             self.silence += 1
+            early = self.silence == self.early_frames
         n = len(self.utt)
         if (
             self.silence >= self.end_frames
@@ -389,31 +640,70 @@ class Captioner:
             or n >= self.hard_max
         ):
             self.finish()
+        elif early and self.voiced >= self.min_frames and self.utterances is None:
+            self.transcribe_early()
+
+    def kept_frames(self):
+        return len(self.utt) - max(0, self.silence - 3)  # drop trailing silence
+
+    def recognize(self, audio, show=False):
+        """(Japanese, English, asr seconds, mt seconds), or None if there was no real speech."""
+        t0 = time.monotonic()
+        ja = self.asr(audio, final=True)
+        asr_s = time.monotonic() - t0
+        if looks_bogus(ja, self.args.hint):
+            return None
+        if show:
+            self.screen.final_ja(ja)
+        t1 = time.monotonic()
+        en = self.mt(ja) if self.mt is not None else ""
+        return ja, en, asr_s, time.monotonic() - t1
+
+    def transcribe_early(self):
+        """At a short pause, transcribe and translate before knowing whether the person has
+        finished. If the pause turns out to end the utterance, finish() uses this (the audio is
+        the same) and the line appears that much sooner; if they keep talking, it was an
+        in-progress update."""
+        n = self.kept_frames()
+        result = self.recognize(np.concatenate(self.utt[:n]))
+        self.early = (n, result)
+        self.last_partial = time.monotonic()
+        if result is None:
+            return
+        if not self.args.no_partials:
+            self.screen.partial(result[0], result[1] or None)
+        if self.voice and result[1]:
+            self.voice.prepare(result[1])
 
     def finish(self):
-        frames = self.utt[: len(self.utt) - max(0, self.silence - 3)]  # drop trailing silence
-        voiced = self.voiced
+        n, voiced, early = self.kept_frames(), self.voiced, self.early
+        frames = self.utt[:n]
         self.reset()
         if voiced < self.min_frames:
             self.screen.clear()
             return
-        audio = np.concatenate(frames)
-        t0 = time.monotonic()
-        ja = self.asr(audio, final=True)
-        t1 = time.monotonic()
-        if looks_bogus(ja, self.args.hint):
+        if self.utterances is not None:
+            self.utterances.append(np.concatenate(frames))
+            return
+        if early is not None and early[0] == n:  # nothing was said since: use it
+            result = early[1]
+            if result is not None:
+                self.screen.final_ja(result[0])
+        else:
+            early, result = None, self.recognize(np.concatenate(frames), show=True)
+        if result is None:
             self.screen.clear()
             return
-        self.screen.final_ja(ja)
-        if self.mt is None:
-            self.screen.final_en(ja, "", t1 - t0, 0.0)
-            return
-        en = self.mt(ja)
-        self.screen.final_en(ja, en, t1 - t0, time.monotonic() - t1)
+        ja, en, asr_s, mt_s = result
+        self.screen.final_en(ja, en, asr_s, mt_s, early is not None)
+        if self.voice and en:
+            self.voice.say(en)
 
     def maybe_partial(self):
         now = time.monotonic()
         if not self.in_speech or self.voiced < int(1.0 / FRAME_S):
+            return
+        if self.silence >= 2:  # a pause may be starting; keep the model free for the final text
             return
         if now - self.last_partial < self.args.partial_every:
             return
@@ -449,6 +739,56 @@ class Captioner:
                 self.maybe_partial()
 
 
+def bench(args):
+    """Put the same sentences of an audio file through each speech model, translate them, and
+    time every step, to choose the fastest model that is still right on your own audio."""
+    pcm = read_file(args.bench)
+    screen = Screen(False, False, None)
+    args.no_partials, args.early = True, 0
+    splitter = Captioner(args, None, None, screen)
+    splitter.utterances = []
+    q = queue.Queue()
+    feed_file(pcm, q, realtime=False)
+    splitter.run(q, realtime=False)
+    utts = splitter.utterances
+    print(f"{args.bench}: {len(pcm) / SR:.0f} s of audio, {len(utts)} sentences")
+    if not utts:
+        return
+    mt = None
+    if args.mt != "none":
+        print(f"{DIM}Loading the translation model ({MT_MODELS.get(args.mt, args.mt)}) …{RESET}", flush=True)
+        mt = Translator(args.mt)
+        mt("もしもし、聞こえますか？")
+    summary, mt_times = [], []
+    for name in [m.strip() for m in args.models.split(",") if m.strip()]:
+        print(f"\n{BOLD}{name}{RESET}  {DIM}{ASR_MODELS.get(name, name)} (downloads once if new){RESET}", flush=True)
+        try:
+            asr = make_asr(name, args.hint)
+            asr(np.zeros(SR, np.float32))
+        except Exception as e:
+            print(f"  couldn't load it: {e}")
+            continue
+        times = []
+        for audio in utts:
+            t = time.monotonic()
+            ja = asr(audio, final=True)
+            times.append(time.monotonic() - t)
+            print(f"  {times[-1]:5.2f}s  {CYAN}{ja}{RESET}", flush=True)
+            if mt is not None and ja:
+                t = time.monotonic()
+                en = mt(ja)
+                mt_times.append(time.monotonic() - t)
+                print(f"          {YELLOW}➜ {en}{RESET}", flush=True)
+        summary.append((name, sum(times) / len(times), max(times)))
+        del asr
+        gc.collect()
+    print(f"\n{BOLD}Speech recognition, seconds per sentence after the person stops{RESET}")
+    for name, avg, worst in summary:
+        print(f"  {name:<12} {avg:5.2f} average  {worst:5.2f} slowest")
+    if mt_times:
+        print(f"  translation  {sum(mt_times) / len(mt_times):5.2f} average  {max(mt_times):5.2f} slowest")
+
+
 def main():
     ap = argparse.ArgumentParser(prog="call-captions", description="Live Japanese -> English call captions, fully on-device.")
     ap.add_argument("--device", default="BlackHole", help="input device name (substring) or index [BlackHole]")
@@ -465,14 +805,31 @@ def main():
     ap.add_argument("--partial-every", type=float, default=1.0, help="seconds between in-progress updates [1.0]")
     ap.add_argument("--draft-after", type=float, default=4.0,
                     help="translate in-progress text once an utterance is this long; 0 disables [4.0]")
+    ap.add_argument("--speak", nargs="?", const="split", choices=["split", "mix"],
+                    help="say the English in your left ear (headphones only); split: the call only in your "
+                         "right ear (default), mix: the call stays in both ears")
+    ap.add_argument("--voice", default="Samantha",
+                    help="Mac voice for --speak; list them with: say -v '?' [Samantha]")
+    ap.add_argument("--rate", type=int, default=220, help="speaking speed for --speak, words per minute [220]")
+    ap.add_argument("--voice-volume", type=float, default=1.0, help="loudness of the voice, 0 to 2 [1.0]")
     ap.add_argument("--end-silence", type=float, default=0.5, help="pause (s) that ends an utterance [0.5]")
+    ap.add_argument("--early", type=float, default=0.25,
+                    help="start the final transcription after this pause (s), before it is known to end the "
+                         "utterance; same text, sooner. 0 disables [0.25]")
     ap.add_argument("--soft-max", type=float, default=8.0, help="after this many seconds, cut at any short pause [8]")
     ap.add_argument("--hard-max", type=float, default=15.0, help="always cut an utterance at this length [15]")
     ap.add_argument("--vad-threshold", type=float, default=0.5, help="speech probability threshold [0.5]")
     ap.add_argument("--log", help="append a transcript (time, Japanese, English) to this file")
     ap.add_argument("--prefetch", action="store_true", help="download and warm up the models, then exit")
     ap.add_argument("--download-only", action="store_true", help="download the models without loading them, then exit")
+    ap.add_argument("--bench", metavar="AUDIO", help="compare the speech models on an audio file, then exit")
+    ap.add_argument("--models", default="kotoba,parakeet,qwen3",
+                    help="speech models for --bench [kotoba,parakeet,qwen3]")
     args = ap.parse_args()
+
+    if args.bench:
+        bench(args)
+        return
 
     if args.list_devices:
         list_devices()
@@ -508,7 +865,13 @@ def main():
     if args.prefetch:
         return
 
-    captioner = Captioner(args, asr, mt, screen)
+    voice = None
+    if args.speak:
+        voice = Voice(args.speak, args.voice, args.rate, args.voice_volume, screen)
+        call = "the call in your right ear" if args.speak == "split" else "the call in both ears"
+        screen.info(f"Voice: English in your left ear, {call} ({voice.hear_name}).")
+
+    captioner = Captioner(args, asr, mt, screen, voice)
     q = queue.Queue()
     stream = None
     if args.file:
@@ -521,10 +884,14 @@ def main():
 
     try:
         captioner.run(q, realtime=not (args.file and args.fast))
+        if voice is not None:
+            voice.drain()  # the end of a file: let the last line be said
     except KeyboardInterrupt:
         pass
     finally:
         screen.clear()
+        if voice is not None:
+            voice.close()
         if stream is not None:
             stream.stop()
             stream.close()

@@ -3,6 +3,20 @@
 Milestones are versions confirmed working on a real Mac. Each is kept installable for rollback
 as `brew install jinreiyu/tap/call-captions-X.Y.Z` and on the `milestone/vX.Y.Z` branch.
 
+## 1.3.0
+
+Not a milestone yet: roll back with `call-captions-1.2.0` if anything is wrong.
+
+- `--speak`: the Mac's built-in voice says each English line in your left ear while the call plays
+  in your right ear (`--speak mix`: the call stays in both). Headphones only. If they keep
+  talking, it skips to the newest line instead of falling behind. `--voice`, `--rate`,
+  `--voice-volume`.
+- `--early` (on by default, 0.25 s): the final transcription and translation start at a short
+  pause, so a line is usually ready the moment the pause turns out to end the sentence. The text
+  is the same as before. In-progress updates no longer start right as a pause begins.
+- `--asr qwen3` and `--asr qwen3-small`: Qwen3-ASR (Alibaba, Apache-2.0) on MLX.
+- `call-captions bench AUDIO`: compares the speech models' speed and text on your own recording.
+
 ## 1.2.0 (milestone)
 
 Code: `milestone/v1.2.0` (commit `8b6f78e`). Rollback formula: `call-captions-1.2.0`.

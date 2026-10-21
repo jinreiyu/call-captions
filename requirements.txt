@@ -1,6 +1,7 @@
 mlx-whisper>=0.4.3
 mlx-lm>=0.32.0
 parakeet-mlx>=0.5.3
+mlx-qwen3-asr>=0.4.4
 silero-vad>=6.2
 sounddevice>=0.5
 soxr>=1.0
