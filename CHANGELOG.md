@@ -3,6 +3,20 @@
 Milestones are versions confirmed working on a real Mac. Each is kept installable for rollback
 as `brew install jinreiyu/tap/call-captions-X.Y.Z` and on the `milestone/vX.Y.Z` branch.
 
+## 1.6.1
+
+Not a milestone yet: roll back with `call-captions-1.2.0` if anything is wrong.
+
+- Fixes `--turbo` crashing (segmentation fault) on the Mac as soon as it started: translation no
+  longer runs in a second thread, which MLX doesn't allow. Everything runs in one thread again.
+- `--turbo` text now matches the normal version: the Neural Engine does the heavy part of speech
+  recognition (about 3.5x faster on an M4 Mac mini), then Parakeet's own decoder reads off the
+  words, instead of the Core ML build's simpler one that garbled names and dropped punctuation.
+- The word lookup's two CPU models can no longer be left running in the background: each stops
+  within a second once the lookup is gone, however it ended. (The bench used to leave them on.)
+- The lookup pane loads its dictionary into memory when it opens, so the first highlight is
+  instant too.
+
 ## 1.6.0
 
 Not a milestone yet: roll back with `call-captions-1.2.0` if anything is wrong.
@@ -13,6 +27,7 @@ Not a milestone yet: roll back with `call-captions-1.2.0` if anything is wrong.
   `call-captions lookup` by hand, `--no-lookup` to skip it.
 - **`--turbo`:** speech recognition on the Neural Engine (Parakeet's Core ML build), translation on
   the GPU side by side, and lines finish as soon as a sentence ends. Falls back to the GPU by itself.
+  (Crashed on the Mac; fixed in 1.6.1.)
 - **`call-captions bench AUDIO`** now races the current version (control) against turbo on your
   recording in real time, times the word lookup, and runs turbo again with lookups going.
 - Parakeet no longer adds stray words at the end of a line when it re-reads a dropped sentence.

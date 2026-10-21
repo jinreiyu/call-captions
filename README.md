@@ -155,15 +155,17 @@ Highlight Japanese in the captions with the mouse. The **lookup pane** beside th
 call-captions --turbo
 ```
 
-Speech recognition moves to the Mac's **Neural Engine**, translation keeps the **GPU** to itself,
-and both work at the same time. A line also shows as soon as a sentence ends (。？) instead of
-waiting out the full pause. The text is the same; it just arrives sooner. If the Neural Engine
-model can't load, it falls back to the GPU version by itself.
+The heavy part of speech recognition (Parakeet's encoder) moves to the Mac's **Neural Engine**,
+about 3x faster on an M4 Mac mini (that part measured 0.03 to 0.07 s per sentence, against 0.12
+to 0.24 s for the whole GPU version). The
+words are still read off by Parakeet's own decoder, so the text matches the normal version. A line
+also shows as soon as a sentence ends (。？) instead of waiting out the full pause. If the Neural
+Engine model can't load, it falls back to the GPU version by itself.
 
 | Job | Normal | `--turbo` |
 | --- | --- | --- |
-| Hearing Japanese | GPU | Neural Engine |
-| Translating | GPU, after hearing | GPU, side by side with hearing |
+| Hearing Japanese | GPU | Neural Engine (encoder), GPU (decoder, a few ms) |
+| Translating | GPU | GPU |
 | Word lookup | CPU | CPU |
 | Voice | CPU | CPU |
 
@@ -183,7 +185,7 @@ downloads them). If turbo wins, put `--turbo` in `options.txt`.
 
 | Option | What it does |
 | --- | --- |
-| `--turbo` | Speech recognition on the Neural Engine, translation on the GPU side by side, lines finish at sentence ends. |
+| `--turbo` | Speech recognition's encoder on the Neural Engine, and lines finish at sentence ends. |
 | `--asr parakeet` | Default. NVIDIA Parakeet TDT-CTC 0.6B Japanese on the GPU. Adds punctuation. Spells English names as it hears them. |
 | `--asr parakeet-ane` | The same Parakeet on the Neural Engine (Core ML). `--turbo` uses it. |
 | `--asr qwen3` | Qwen3-ASR 1.7B (8-bit). Most accurate on natural conversation in published tests; slower. |

@@ -36,7 +36,7 @@ FRAME_S = FRAME / SR
 ASR_MODELS = {
     "kotoba": "kaiinui/kotoba-whisper-v2.0-mlx",  # Kotoba-Whisper v2.0, distilled for Japanese
     "parakeet": "mlx-community/parakeet-tdt_ctc-0.6b-ja",  # NVIDIA Parakeet TDT-CTC 0.6B Japanese, GPU
-    "parakeet-ane": "FluidInference/parakeet-0.6b-ja-coreml",  # the same model on the Neural Engine
+    "parakeet-ane": "FluidInference/parakeet-0.6b-ja-coreml",  # the same model, encoder on the Neural Engine
     "qwen3": "moona3k/mlx-qwen3-asr-1.7b-8bit",  # Alibaba Qwen3-ASR 1.7B, 8-bit
     "qwen3-small": "moona3k/mlx-qwen3-asr-0.6b-8bit",  # Alibaba Qwen3-ASR 0.6B, 8-bit
     "cpu": "kotoba-tech/kotoba-whisper-v2.0-faster",  # same Kotoba model via faster-whisper, for non-Mac testing
@@ -167,8 +167,11 @@ def ctc_greedy(logits, vocab, blank, step_s):
 
 
 class ParakeetANE:
-    """Parakeet-ja on the Neural Engine (Core ML), which leaves the GPU to the translator. This
-    Core ML build takes 15 s of audio at a time and decodes with Parakeet's CTC head."""
+    """Parakeet-ja with its encoder, nearly all of the work, on the Neural Engine (Core ML). Its
+    output is turned into text by Parakeet's own TDT decoder on MLX, the one --asr parakeet uses,
+    so the text matches the GPU version. If that decoder can't load, the Core ML build's CTC head
+    does it instead (worse with names and punctuation, seen on a real voicemail). The Core ML
+    build takes 15 s of audio at a time."""
 
     WINDOW = 15 * SR
 
@@ -186,6 +189,15 @@ class ParakeetANE:
         with open(os.path.join(path, "vocab.json"), encoding="utf-8") as f:
             self.vocab = json.load(f)
         self.blank = len(self.vocab)
+        self.tdt = None
+        try:
+            import mlx.core as mx
+            from parakeet_mlx import from_pretrained
+
+            self._mx = mx
+            self.tdt = from_pretrained(ASR_MODELS["parakeet"])
+        except Exception:
+            pass
 
     def _once(self, audio):
         n = min(len(audio), self.WINDOW)
@@ -193,8 +205,15 @@ class ParakeetANE:
         x[0, :n] = audio[:n]
         mel = self.prep.predict({"audio_signal": x, "audio_length": np.array([n], np.int32)})
         enc = self.encoder.predict({"mel_features": mel["mel_features"], "mel_length": mel["mel_length"]})
+        features = np.asarray(enc["encoder"], np.float32)  # [1, 1024, steps of 80 ms]
+        steps = int(np.asarray(enc["encoder_length"]).reshape(-1)[0]) or features.shape[2]
+        if self.tdt is not None:
+            mx = self._mx
+            tokens = self.tdt.decode(mx.array(features[:, :, :steps].transpose(0, 2, 1)), mx.array([steps]))[0][0]
+            words = [t for t in tokens if not is_punct(t.text)]
+            text = "".join(t.text for t in tokens).replace("\u2581", " ").strip()
+            return text, (words[-1].end if words else 0.0)
         logits = np.asarray(self.ctc.predict({"encoder_output": enc["encoder"]})["ctc_logits"])[0]
-        steps = int(np.asarray(enc["encoder_length"]).reshape(-1)[0]) or logits.shape[0]
         return ctc_greedy(logits[:steps], self.vocab, self.blank, 15.0 / logits.shape[0])
 
     def __call__(self, audio, final=True):
@@ -710,19 +729,11 @@ class Captioner:
         from silero_vad import load_silero_vad
 
         self.args, self.asr, self.mt, self.screen, self.voice = args, asr, mt, screen, voice
-        self.lanes = getattr(args, "lanes", False)  # speech and translation on separate chips at once
+        # Everything runs in this one thread: MLX crashes (segfault) when a second thread uses
+        # it, which an earlier two-lane turbo did on a real Mac.
         self.quick_end = getattr(args, "quick_end", False)  # finish at 。？ after the short pause
         self.on_line = None  # bench: called with the timings of every finished line
         self.frames_seen = self.last_voiced = 0
-        self.utt_id, self.draft, self.gpu_jobs = 0, None, 0
-        if self.lanes:
-            from concurrent.futures import ThreadPoolExecutor
-
-            # The translator gets a thread of its own (the GPU lane) while speech recognition
-            # carries on in this one (the Neural Engine lane). Finished lines queue up in order.
-            self.gpu = ThreadPoolExecutor(1, thread_name_prefix="translate")
-            self.lines = queue.Queue()
-            threading.Thread(target=self._show_lines, daemon=True).start()
         self._torch = torch
         torch.set_num_threads(1)  # VAD is tiny; extra threads only add overhead
         self.vad = load_silero_vad()
@@ -754,7 +765,6 @@ class Captioner:
                 self.in_speech, self.utt, self.silence, self.voiced = True, list(self.preroll), 0, 1
                 self.preroll.clear()
                 self.last_partial = self.last_draft = time.monotonic()
-                self.utt_id += 1
                 self.last_voiced = self.frames_seen
             return
         self.utt.append(frame)
@@ -763,10 +773,7 @@ class Captioner:
             self.silence = 0
             self.voiced += 1
             self.last_voiced = self.frames_seen
-            if self.early is not None:  # they kept talking: that early guess is stale
-                if self.lanes and self.early[2] is not None:
-                    self.early[2].cancel()  # frees the GPU lane if it hadn't started yet
-                self.early = None
+            self.early = None  # they kept talking: an early guess is stale
         elif p < thr - 0.15:
             self.silence += 1
             early = self.silence == self.early_frames
@@ -807,31 +814,8 @@ class Captioner:
         en, mt_s = self.translate(heard[0])
         return heard[0], en, heard[1], mt_s
 
-    def submit(self, ja):
-        """Start translating on the GPU lane; returns a future of (English, mt seconds)."""
-        self.gpu_jobs += 1
-        future = self.gpu.submit(self.translate, ja)
-
-        def done(f):
-            self.gpu_jobs -= 1
-
-        future.add_done_callback(done)
-        return future
-
     def speech_end(self):
         return self.last_voiced * FRAME_S  # audio time the person stopped talking
-
-    def _show_lines(self):
-        while True:
-            ja, asr_s, future, early, end_s = self.lines.get()
-            try:
-                self.screen.final_ja(ja)
-                en, mt_s = future.result()
-                self.shown(ja, en, asr_s, mt_s, early, end_s)
-            except Exception as e:  # keep captioning even if one line fails
-                self.screen.info(f"! couldn't translate a line: {e}")
-            finally:
-                self.lines.task_done()
 
     def shown(self, ja, en, asr_s, mt_s, early, end_s):
         self.screen.final_en(ja, en, asr_s, mt_s, early)
@@ -848,32 +832,15 @@ class Captioner:
         in-progress update."""
         n = self.kept_frames()
         self.last_partial = time.monotonic()
-        if self.lanes:
-            heard = self.hear(np.concatenate(self.utt[:n]))
-            future = self.submit(heard[0]) if heard else None
-            self.early = (n, heard, future)
-            if heard is None:
-                return
-            if self.voice:
-
-                def prepare(f):
-                    if not f.cancelled() and f.exception() is None and f.result()[0]:
-                        self.voice.prepare(f.result()[0])
-
-                future.add_done_callback(prepare)
-            ja = heard[0]
-            if not self.args.no_partials:
-                self.screen.partial(ja)
-        else:
-            result = self.recognize(np.concatenate(self.utt[:n]))
-            self.early = (n, result)
-            if result is None:
-                return
-            ja = result[0]
-            if not self.args.no_partials:
-                self.screen.partial(ja, result[1] or None)
-            if self.voice and result[1]:
-                self.voice.prepare(result[1])
+        result = self.recognize(np.concatenate(self.utt[:n]))
+        self.early = (n, result)
+        if result is None:
+            return
+        ja = result[0]
+        if not self.args.no_partials:
+            self.screen.partial(ja, result[1] or None)
+        if self.voice and result[1]:
+            self.voice.prepare(result[1])
         if self.quick_end and ends_sentence(ja):
             self.finish()  # a finished sentence: no need to wait out the rest of the pause
 
@@ -888,13 +855,6 @@ class Captioner:
             self.utterances.append(np.concatenate(frames))
             return
         reuse = early is not None and early[0] == n  # nothing was said since the short pause
-        if self.lanes:
-            heard, future = early[1:] if reuse else (self.hear(np.concatenate(frames)), None)
-            if heard is None:
-                self.screen.clear()
-                return
-            self.lines.put((heard[0], heard[1], future or self.submit(heard[0]), reuse, end_s))
-            return
         if reuse:
             result = early[1]
             if result is not None:
@@ -921,23 +881,7 @@ class Captioner:
             return
         en = None
         long_enough = len(self.utt) * FRAME_S >= self.args.draft_after
-        wants_draft = self.mt is not None and self.args.draft_after > 0 and long_enough and now - self.last_draft >= 2.5
-        if self.lanes:
-            # Drafts only use the GPU lane when no real line is waiting for it; the draft shows
-            # with the next in-progress update.
-            if self.draft and self.draft[0] == self.utt_id:
-                en = self.draft[1]
-            if wants_draft and self.gpu_jobs == 0:
-                self.last_draft = now
-                utt_id = self.utt_id
-                future = self.submit(ja)
-
-                def keep(f, utt_id=utt_id):
-                    if not f.cancelled() and f.exception() is None:
-                        self.draft = (utt_id, f.result()[0])
-
-                future.add_done_callback(keep)
-        elif wants_draft:
+        if self.mt is not None and self.args.draft_after > 0 and long_enough and now - self.last_draft >= 2.5:
             self.last_draft = now
             en = self.mt(ja)
         self.screen.partial(ja, en)
@@ -950,8 +894,6 @@ class Captioner:
             if chunk is None:
                 if self.in_speech:
                     self.finish()
-                if self.lanes:
-                    self.lines.join()  # let the last lines be translated and shown
                 return
             buf = np.concatenate([buf, chunk])
             while len(buf) >= FRAME:
@@ -967,7 +909,7 @@ class Captioner:
 
 def split_sentences(args, pcm):
     """The utterances the live captioner would cut the audio into."""
-    split_args = argparse.Namespace(**{**vars(args), "no_partials": True, "early": 0, "lanes": False})
+    split_args = argparse.Namespace(**{**vars(args), "no_partials": True, "early": 0})
     splitter = Captioner(split_args, None, None, Screen(False, False, None))
     splitter.utterances = []
     q = queue.Queue()
@@ -1020,7 +962,7 @@ class BenchScreen(Screen):
 def race(args, asr, mt, turbo, pcm, during=None):
     """Play the recording in real time through the whole live pipeline, like a call, and time
     each line from the moment the person stopped talking to the English on screen."""
-    overrides = dict(no_partials=False, lanes=turbo, quick_end=turbo, early=0.15 if turbo else 0.25)
+    overrides = dict(no_partials=False, quick_end=turbo, early=0.15 if turbo else 0.25)
     c = Captioner(argparse.Namespace(**{**vars(args), **overrides}), asr, mt, BenchScreen())
     lines = []
     c.on_line = lines.append
@@ -1061,8 +1003,8 @@ def start_lookup():
 
 
 def bench(args):
-    """Control (the current pipeline) against turbo (speech on the Neural Engine, translation on
-    the GPU side by side, lines finishing at sentence ends), then the word lookup on the CPU, and
+    """Control (the current pipeline) against turbo (Parakeet's encoder on the Neural Engine, lines
+    finishing at sentence ends), then the word lookup on the CPU, and
     turbo again while lookups run, to show they don't slow the live captions down."""
     import subprocess
 
@@ -1095,7 +1037,7 @@ def bench(args):
         turbo_asr = None
         print(f"{YELLOW}! The Neural Engine model didn't load ({e}); turbo can't be measured{RESET}")
     if turbo_asr is not None:
-        print(f"{BOLD}turbo{RESET} {DIM}(Parakeet on the Neural Engine, translation on the GPU side by side){RESET}", flush=True)
+        print(f"{BOLD}turbo{RESET} {DIM}(Parakeet's encoder on the Neural Engine; a line finishes as soon as a sentence ends){RESET}", flush=True)
         results["turbo"] = race(args, turbo_asr, mt, True, pcm)
 
     print(f"\n{BOLD}3. Word lookup on the CPU{RESET} {DIM}(dictionary, translation, explanation){RESET}", flush=True)
@@ -1118,16 +1060,23 @@ def bench(args):
 
         def keep_looking_up():
             i = 0
-            while proc.poll() is None:
-                proc.stdin.write(phrases[i % len(phrases)] + "\n")
-                proc.stdin.flush()
-                i += 1
-                time.sleep(1.0)
+            try:
+                while proc.poll() is None:
+                    proc.stdin.write(phrases[i % len(phrases)] + "\n")
+                    proc.stdin.flush()
+                    i += 1
+                    time.sleep(1.0)
+            except (OSError, ValueError):
+                pass  # the race is over and the lookup was closed
 
         try:
             results["turbo + lookups"] = race(args, turbo_asr, mt, True, pcm, during=keep_looking_up)
         finally:
-            proc.kill()
+            try:
+                proc.stdin.close()  # it then stops its models and exits
+                proc.wait(timeout=15)
+            except Exception:
+                proc.kill()  # its models' watchdog still stops them
 
     print(f"\n{BOLD}Summary{RESET}")
     for name, (avg, worst) in models.items():
@@ -1194,8 +1143,8 @@ def main():
                     help="for the app: don't open the word lookup pane (call-captions lookup) beside the captions")
     ap.add_argument("--voice-volume", type=float, default=1.0, help="loudness of the voice, 0 to 2 [1.0]")
     ap.add_argument("--turbo", action="store_true",
-                    help="speech recognition on the Neural Engine and translation on the GPU at the same time, "
-                         "and a line finishes as soon as a sentence ends (。？). Compare with: call-captions bench")
+                    help="Parakeet's encoder on the Neural Engine (about 3x faster), and a line finishes as soon as "
+                         "a sentence ends (。？). Compare with: call-captions bench")
     ap.add_argument("--quick-end", action="store_true",
                     help="finish a line at the short --early pause when it ends a sentence (part of --turbo)")
     ap.add_argument("--end-silence", type=float, default=0.5, help="pause (s) that ends an utterance [0.5]")
@@ -1266,14 +1215,13 @@ def main():
     if args.early is None:
         args.early = 0.15 if args.turbo else 0.25
     asr = load_asr(args, screen)
-    args.lanes = args.turbo and isinstance(asr, ParakeetANE)  # the GPU is free for translation only then
     if args.hint and isinstance(asr, (ParakeetASR, ParakeetANE)):
         screen.info("  --hint has no effect on Parakeet; --asr qwen3 or --asr kotoba use it")
     t = time.monotonic()
     asr(np.zeros(SR, np.float32))
     screen.info(f"  ready, warm-up {time.monotonic() - t:.1f}s")
-    if args.lanes:
-        screen.info("  turbo: speech on the Neural Engine, translation on the GPU, side by side")
+    if args.turbo and isinstance(asr, ParakeetANE):
+        screen.info("  turbo: Parakeet's encoder on the Neural Engine; lines finish at sentence ends")
 
     mt = None
     if args.mt != "none":

@@ -191,34 +191,35 @@ Other things considered for speed:
   Mac's output on BlackHole, a line through the default output, which reaches the right ear the
   way a call does. That checks both halves of the routing before a real call.
 
-### Turbo: one job per chip (1.6.0)
+### Turbo: the Neural Engine for hearing (1.6)
 
-The Mac has three separate engines: CPU, GPU and Neural Engine. Until 1.6.0 everything that
-mattered ran on the GPU, one step after another. `--turbo`:
+The Mac has three separate engines: CPU, GPU and Neural Engine. `--turbo`:
 
 | Job | Chip | How |
 | --- | --- | --- |
-| Hearing (speech → Japanese) | Neural Engine | Parakeet's Core ML build via coremltools, `CPU_AND_NE` |
-| Translating | GPU | LFM2-ENJP on MLX, in a thread of its own |
+| Hearing: encoder (nearly all the work) | Neural Engine | Parakeet's Core ML build via coremltools, `CPU_AND_NE` |
+| Hearing: decoder | GPU | Parakeet's own TDT decoder on MLX, a few ms |
+| Translating | GPU | LFM2-ENJP on MLX |
 | Word lookup | CPU | a separate program, llama.cpp with `--device none` |
 | Voice, voice activity | CPU | as before |
 
-- **Side by side:** the main thread keeps listening and hearing on the Neural Engine while the
-  translator works on the GPU; finished lines go through a queue so they still show in order.
-  In-progress drafts only use the GPU when no real line is waiting for it. Turbo only turns this on
-  with the Neural Engine model: two threads must never use MLX at once.
+- **Measured on an M4 Mac mini** (the owner's voicemail, 3 sentences): Parakeet on the GPU took
+  0.12 to 0.24 s per sentence, the Neural Engine build 0.03 to 0.07 s. The live race showed control
+  lines 0.54 to 0.75 s after the end of speech.
+- **One thread only.** 1.6.0 ran translation in a second thread ("lanes") while hearing went on;
+  on the Mac that crashed with a segmentation fault as soon as turbo started: MLX must not be used
+  from two threads. 1.6.1 removed the lanes. With hearing down to a few hundredths of a second,
+  they would have saved almost nothing anyway.
+- **Decoder:** the Core ML build's own CTC head was worse on the Mac (「yorojapan」 came out as
+  「yロジャpan」, a comma was lost and the translation then invented a sentence). Since 1.6.1 the
+  Core ML encoder's output goes to Parakeet's TDT decoder on MLX instead, the same one the GPU
+  version uses; on the voicemail that path gives exactly the GPU version's text. The CTC head
+  stays as a fallback if the MLX model can't load.
 - **Sooner at a pause:** the early transcription starts at a 0.15 s pause (0.25 s otherwise). If
   Parakeet's text then ends a sentence (。？！), the line is finished there instead of waiting
-  for the 0.5 s pause. If they keep talking, the early translation is cancelled so it doesn't hold
-  up the GPU.
-- **Why the pause matters most:** with stand-in models timed like the real ones (hearing 0.2 s on
-  the GPU vs 0.09 s on the Neural Engine, translation 0.15 s), on a real recording, control showed
-  lines 0.60 to 0.68 s after the end of speech and turbo 0.38 to 0.42 s, with identical lines. An
-  earlier version that still waited 0.25 s gained almost nothing: the wait, not the chip, was the
-  limit.
-- **The Neural Engine model:** a fixed 15 s window (shorter audio is padded), decoded with
-  Parakeet's CTC head (greedy). Its vocabulary is identical to the MLX build's. If it can't load,
-  the captioner falls back to the GPU Parakeet and runs without lanes.
+  for the 0.5 s pause. Stand-in tests had shown this pause, not the chip, to be the main limit.
+- **The Neural Engine model:** a fixed 15 s window (shorter audio is padded). Its vocabulary is
+  identical to the MLX build's. If it can't load, the captioner falls back to the GPU Parakeet.
 - **Parakeet stopping after one sentence**, now handled for both decoders: on a real voicemail,
   CTC placed 「。」 at the very end of the audio and dropped the sentence before it, so "where it
   stopped" means the last word, not punctuation. CTC also spots words early, so instead of
@@ -381,8 +382,13 @@ Development happened in a Linux container without a Mac, so testing was split:
   - Neural Engine Parakeet: inputs and outputs taken from the Core ML model files; the decoding
     (CTC, vocabulary, picking up after a dropped sentence) run on the real voicemail using the same
     model's CTC head on Linux: all sentences complete. The Core ML calls themselves need a Mac.
-  - Turbo lanes and the sentence-end shortcut: stand-in models with realistic timings on the real
-    recording, played in real time: same lines in the same order, 0.38 s vs 0.60 s average.
+  - The sentence-end shortcut: stand-in models with realistic timings on the real recording,
+    played in real time: same lines in the same order, 0.38 s vs 0.60 s average.
+  - On the owner's M4 Mac mini (bench): Core ML Parakeet worked, 3.5x faster than on the GPU; the
+    turbo race crashed (the lanes, removed in 1.6.1).
+- **1.6.1:** the hybrid decoder (Core ML encoder output → MLX TDT decoder) checked on the
+  voicemail with the same model's encoder standing in for Core ML: identical text to the GPU
+  version on all three sentences.
   - Word lookup: run for real on Linux (dictionary, llama.cpp CPU build, both models) on interview
     phrases. On that 4-core cloud machine the translation took about 1–1.5 s and the explanation
     about 2–2.5 s; the M4's CPU should be several times faster. `bench` measures it.

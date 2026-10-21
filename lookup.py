@@ -120,7 +120,11 @@ class Dictionary:
     def __init__(self, db_path=DICT_DB):
         import fugashi
 
+        with open(db_path, "rb") as f:  # into memory now, so even the first highlight is instant
+            while f.read(1 << 22):
+                pass
         self.db = sqlite3.connect(db_path, check_same_thread=False)
+        self.db.execute("PRAGMA mmap_size = 268435456")
         self.tagger = fugashi.Tagger()  # UniDic (unidic-lite): words, dictionary forms, readings
 
     def entries(self, form, phrases_only=False):
@@ -195,6 +199,15 @@ def model_path(repo_file):
     return hf_hub_download(*repo_file)
 
 
+# Runs llama-server and stops it as soon as this program is gone, however it ended (even
+# killed outright), so a model can never be left running in the background.
+WATCHDOG = (
+    '"$@" & srv=$!; trap \'kill $srv 2>/dev/null; exit 0\' TERM HUP INT; '
+    'while kill -0 "$OWNER" 2>/dev/null && kill -0 $srv 2>/dev/null; do sleep 1; done; '
+    'kill $srv 2>/dev/null'
+)
+
+
 class CPUModel:
     """A llama.cpp server for one model, with the GPU switched off (--device none)."""
 
@@ -205,12 +218,14 @@ class CPUModel:
         self.port = free_port()
         base = [server, "-m", gguf, "--host", "127.0.0.1", "--port", str(self.port), "-ngl", "0",
                 "-t", str(threads), "-c", "1024", "-np", "1"]
+        env = {**os.environ, "OWNER": str(os.getpid())}
         self.proc = None
         for extra in (["--device", "none"], []):  # older llama.cpp has no --device
-            self.proc = subprocess.Popen(base + extra, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            self.proc = subprocess.Popen(["/bin/sh", "-c", WATCHDOG, "sh", *base, *extra], env=env,
+                                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             if self._wait_ready():
                 return
-            self.proc.kill()
+            self.close()
         raise RuntimeError(f"llama-server didn't start for {os.path.basename(gguf)}")
 
     def _wait_ready(self, timeout=60):
@@ -248,7 +263,11 @@ class CPUModel:
 
     def close(self):
         if self.proc and self.proc.poll() is None:
-            self.proc.terminate()
+            self.proc.terminate()  # the watchdog stops the server
+            try:
+                self.proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
 
 
 class Lookup:
