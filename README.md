@@ -89,7 +89,7 @@ Options you want every time go in `~/call-captions/options.txt`, one per line, f
 
 ```
 --device "BlackHole 64ch"
---voice-speed 2
+--voice-speed 2.5
 ```
 
 `call-captions`, the app and `test-voice` all use it (since 1.9.1; before, only the app did). An
@@ -124,9 +124,9 @@ way a call does).
   it as the system voice. The window says which voice it uses when it starts.
 - `--voice Fred` is the classic robot voice, the quickest to start talking. Any voice from
   `say -v '?'` works, for example `--voice Samantha`.
-- `--voice-speed 1.5` (the default) plays the voice one and a half times as fast, at the same
-  pitch, whatever the voice (like a podcast at 1.5x). `1` is its normal speed, `2` twice, up to 3.
-  Faster keeps up better.
+- `--voice-speed 2` (the default since 1.10) plays the voice twice as fast, at the same pitch,
+  whatever the voice (like a podcast at 2x). `1` is its normal speed, `1.5` one and a half times,
+  up to 3. Faster keeps up better.
 - `--rate 200` sets the voice's own words per minute instead (before `--voice-speed`); not every
   voice follows it.
 - If they keep talking, the voice skips a line rather than falling behind (the line stays on
@@ -140,7 +140,7 @@ Try it on a recording: `call-captions --file ~/Downloads/voicemail.m4a`.
 ## Look up a word
 
 Highlight Japanese in the captions with the mouse. The answer shows right there, among the
-captions behind a magenta bar, and the meaning is said in your left ear:
+captions behind a magenta bar:
 
 ```
 ┃ 伺ってもよろしいですか
@@ -150,9 +150,10 @@ captions behind a magenta bar, and the meaning is said in your left ear:
 ┃   ✎ "Would it be okay to ask?" It's polite and respectful.            ← explanation, 1 s
 ```
 
-- On by default (since 1.8.0, however you start Call Captions). The voice says the dictionary
-  meaning for one word, otherwise the translation, right after the line it's saying, and never
-  skips it. `--no-lookup-voice` keeps it silent, `--no-lookup` turns the lookup off.
+- On by default (since 1.8.0, however you start Call Captions). It's shown, not said, so the
+  voice stays with the call (since 1.10). `--lookup-voice` also says the meaning in your left ear
+  (the dictionary's for one word, else the translation), between the captions' lines.
+  `--no-lookup` turns the lookup off.
 - The explanation comes from a small model and is a hint: when it disagrees with the dictionary
   line, trust the dictionary.
 - `call-captions lookup` runs it on its own in any terminal window (`--stdin` to type phrases).
@@ -217,7 +218,7 @@ downloads them). If quick suits you better, put `--no-turbo` in `options.txt`.
 | `--no-speak` | Captions only. By default the English is said in your left ear, the call in your right. |
 | `--speak mix` | Keep the call in both ears; the English is added on the left. |
 | `--voice NAME` | Voice (default: the Mac's system voice, Siri if you chose it; `Fred` is the robot). |
-| `--voice-speed 1.5` | How fast the voice talks, same pitch: 1 normal, 1.5 default, up to 3. |
+| `--voice-speed 2` | How fast the voice talks, same pitch: 1 normal, 2 default, up to 3. |
 | `--rate 200` | Words per minute for the voice itself, before `--voice-speed`. |
 | `--voice-volume 1.5` | Louder voice, 0 to 2. |
 | `--english-only` | Hide the Japanese lines. |
@@ -225,7 +226,7 @@ downloads them). If quick suits you better, put `--no-turbo` in `options.txt`.
 | `--end-silence 0.4` | Pause (seconds) that ends a sentence. Default 0.5. Shorter is sooner but can cut sentences in two. |
 | `--early 0.15` | Start the final text after this much pause, before knowing it ends the sentence. Same text, sooner. `0` turns it off. 0.25 with `--no-quick-end`. |
 | `--no-lookup` | No word lookup. |
-| `--no-lookup-voice` | Show word lookups but don't say them. |
+| `--lookup-voice` | Also say word lookups in your left ear (off by default). |
 | `--log calls.txt` | Save a transcript (time, Japanese, English). |
 | `--device NAME` | Input to listen on. Default: the first device named BlackHole. |
 | `--list-devices` | Show input devices. |
@@ -269,7 +270,7 @@ are downloaded from EDRDG during setup.
   voice can't run (for example when the sound plays on speakers).
 - **Can't hear the call in your right ear:** stop with Ctrl+C and use `--speak mix`. If the voice
   ever stops, the call goes back to both ears on its own.
-- **The voice is late:** a faster `--voice-speed` (2 or more), or `--voice Fred`, which starts
+- **The voice is late:** a faster `--voice-speed` (up to 3), or `--voice Fred`, which starts
   talking soonest.
 
 ## Uninstall

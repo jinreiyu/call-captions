@@ -601,7 +601,7 @@ def voice_name(voice):
 
 
 def voice_label(args):
-    """E.g. "Siri, 1.5x speed"."""
+    """E.g. "Siri, 2x speed"."""
     rate = f", {args.rate} words a minute" if args.rate else ""
     return f"{voice_name(args.voice)}{rate}, {args.voice_speed:g}x speed"
 
@@ -830,15 +830,16 @@ class Voice:
 class WordLookup:
     """The word lookup (lookup.py --serve) in a process of its own, on the CPU only: highlight
     Japanese (iTerm2 copies what you highlight; ⌘C works anywhere) and its words, a translation
-    and an explanation show among the captions, and the meaning is said in your left ear."""
+    and an explanation show among the captions. With --lookup-voice the meaning is also said in
+    your left ear (off by default: it would come between the lines the voice is saying)."""
 
     LOG = os.path.join(tempfile.gettempdir(), "call-captions-lookup.log")
 
-    def __init__(self, screen):
+    def __init__(self, screen, speak=False):
         import subprocess
 
         self._sp = subprocess
-        self.screen, self.voice, self.closed = screen, None, False
+        self.screen, self.speak, self.voice, self.closed = screen, speak, None, False
         here = os.path.dirname(os.path.abspath(__file__))
         with open(self.LOG, "w") as log:
             # Its own session: Ctrl+C reaches only the captioner, which then closes this.
@@ -857,8 +858,9 @@ class WordLookup:
                 continue
             if "ready" in event:
                 only = "" if event.get("models") else " (dictionary only)"
+                hear = " and hear" if self.speak else ""
                 self.screen.info(f"{RESET}{BOLD}Word lookup on{RESET}{DIM}{only}: highlight Japanese in the captions "
-                                 "(or copy it) to see and hear what it means.")
+                                 f"(or copy it) to see{hear} what it means.")
                 continue
             self.screen.lookup(event)
             voice = self.voice
@@ -1439,16 +1441,18 @@ def main():
     ap.add_argument("--voice", default="",
                     help="a Mac voice by name, e.g. Fred (the robot, fastest) or Samantha; list them with: say -v '?'. "
                          "Default: the Mac's system voice, Siri if you chose a Siri voice there")
-    ap.add_argument("--voice-speed", type=float, default=1.5,
+    ap.add_argument("--voice-speed", type=float, default=2.0,
                     help="how much faster than normal the voice talks, at the same pitch: 1 is normal, 2 twice as "
-                         "fast, 0.5 to 3 [1.5]")
+                         "fast, 0.5 to 3 [2]")
     ap.add_argument("--rate", type=int,
                     help="words per minute for the voice itself, before --voice-speed; not every voice follows it "
                          "[the Mac's speaking rate]")
     ap.add_argument("--test-voice", action="store_true", help="say a test line in your left ear, then exit")
     ap.add_argument("--no-lookup", action="store_true", help="no word lookup when you highlight Japanese")
-    ap.add_argument("--no-lookup-voice", action="store_true",
-                    help="show word lookups but don't say them in your ear")
+    ap.add_argument("--lookup-voice", action="store_true",
+                    help="also say each word lookup's meaning in your left ear, between the captions' lines")
+    ap.add_argument("--no-lookup-voice", dest="lookup_voice", action="store_false",
+                    help="show word lookups without saying them (the default)")
     ap.add_argument("--voice-volume", type=float, default=1.0, help="loudness of the voice, 0 to 2 [1.0]")
     ap.add_argument("--turbo", action="store_true", default=True,
                     help="speech recognition with Parakeet's encoder on the Neural Engine, in a helper process; the "
@@ -1549,7 +1553,7 @@ def main():
     screen = Screen(args.english_only, not args.no_timing, args.log)
     lookup = None
     if not args.no_lookup and not args.prefetch:
-        lookup = WordLookup(screen)  # loads its CPU models while the others load
+        lookup = WordLookup(screen, args.lookup_voice and bool(args.speak))  # loads its CPU models meanwhile
     if args.turbo and args.asr == "parakeet":
         args.asr = "parakeet-ane"
     if args.early is None:
@@ -1587,7 +1591,7 @@ def main():
                 screen.info("  " + SIRI_HOW)
         except VoiceOff as e:
             screen.info(f"{RESET}{YELLOW}! Voice off: {e}{RESET}")
-    if lookup is not None and not args.no_lookup_voice:
+    if lookup is not None and args.lookup_voice:
         lookup.voice = voice
 
     captioner = Captioner(args, asr, mt, screen, voice)

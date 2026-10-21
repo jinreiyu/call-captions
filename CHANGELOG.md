@@ -3,6 +3,14 @@
 Milestones are versions confirmed working on a real Mac. Each is kept installable for rollback
 as `brew install jinreiyu/tap/call-captions-X.Y.Z` and on the `milestone/vX.Y.Z` branch.
 
+## 1.10.0
+
+Not a milestone yet: roll back with `call-captions-1.2.0` if anything is wrong.
+
+- Word lookups are shown but no longer said: on a call, the spoken meaning came between the live
+  lines. `--lookup-voice` brings it back.
+- The voice talks at **2x** by default (`--voice-speed 2`); `1.5` was the default in 1.9.
+
 ## 1.9.1
 
 Not a milestone yet: roll back with `call-captions-1.2.0` if anything is wrong.

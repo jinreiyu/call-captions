@@ -118,7 +118,7 @@ After the other person stops talking, a line appears after:
    (a simple formant voice, the quickest to make; the default up to 1.7). Since 1.8 the default
    is the Mac's system voice, which can be a Siri voice: more natural, a little slower to make.
    The draft of a line is made ahead of time, so usually only the final line's audio is waited
-   for. Since 1.9 the audio is played 1.5x as fast at the same pitch (`--voice-speed`, FFmpeg's
+   for. Since 1.9 the audio is sped up at the same pitch (`--voice-speed`, 2x since 1.10; FFmpeg's
    `atempo` through PyAV, about 10 ms a line): it works with any voice, where `say -r` depends on
    the voice following it.
 
@@ -276,10 +276,12 @@ The lookup watches for Japanese being copied (iTerm2 copies whatever is highligh
 anywhere). Up to 1.7 it only ran in a pane of its own that the app opened, so starting
 `call-captions` in a terminal had no lookup at all. Since 1.8 the captioner starts it as a child
 process (`lookup.py --serve`, its own session, CPU only), reads its results as JSON lines and
-shows them among the captions behind a magenta bar. The voice says the dictionary's first meaning
-when one word was highlighted, otherwise the translation. A lookup is said after the line playing
-now and is never skipped (live lines skip when a newer one is waiting). A newer highlight cuts the
-explanation of the one before short. If the captioner ends, however it ends, the child sees it
+shows them among the captions behind a magenta bar. 1.8 and 1.9 also said the meaning in the
+left ear; on a real call that came between the live lines, so since 1.10 it's only shown unless
+`--lookup-voice`: then the voice says the dictionary's first meaning when one word was
+highlighted, otherwise the translation, after the line playing now, never skipped (live lines
+skip when a newer one is waiting). A newer highlight cuts the explanation of the one before
+short. If the captioner ends, however it ends, the child sees it
 (its parent changes) and stops its models. `call-captions lookup` still runs it on its own.
 For each highlight:
 
