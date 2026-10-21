@@ -1,0 +1,150 @@
+#!/bin/bash
+# call-captions: live Japanese -> English captions for calls, on-device on Apple Silicon Macs.
+#
+# The program files live wherever Homebrew put them (this script's parent folder). Everything
+# downloaded at setup (Python, packages, models) and your settings live in one data folder,
+# ~/call-captions by default, so `call-captions uninstall` can remove all of it.
+set -euo pipefail
+
+VERSION="1.0.0"
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+data="${CALL_CAPTIONS_HOME:-$HOME/call-captions}"
+py="$data/.venv/bin/python"
+export PATH="/opt/homebrew/bin:$PATH"
+export HF_HOME="$data/.hf" UV_CACHE_DIR="$data/.uv/cache" UV_PYTHON_INSTALL_DIR="$data/.uv/python"
+
+usage() {
+  cat <<EOF
+call-captions $VERSION: live Japanese -> English captions for calls, on your Mac.
+
+  call-captions                  caption what plays into BlackHole (the call)
+  call-captions --file AUDIO     caption an audio file instead, to test
+  call-captions setup            one-time setup: Python, models (about 2 GB), the app
+  call-captions app              rebuild "Call Captions.app" in Applications
+  call-captions uninstall        remove the app, models and settings
+  call-captions help             this text plus every caption option
+
+Settings used by the app: $data/options.txt
+EOF
+}
+
+# Create the Python environment, and update its packages whenever requirements.txt changed
+# (for example after `brew upgrade call-captions`).
+ensure_env() {
+  mkdir -p "$data"
+  if [[ ! -x "$py" ]]; then
+    echo "==> Installing Python 3.12 into $data"
+    uv venv --quiet --python 3.12 --python-preference only-managed "$data/.venv"
+  fi
+  local want
+  want="$(shasum -a 256 "$here/requirements.txt" | cut -d' ' -f1)"
+  if [[ "$(cat "$data/.requirements.sha256" 2>/dev/null)" != "$want" ]]; then
+    echo "==> Installing Python packages"
+    uv pip install --quiet --python "$py" -r "$here/requirements.txt"
+    echo "$want" >"$data/.requirements.sha256"
+  fi
+}
+
+build_app() {
+  local apps app cli
+  if [[ -w /Applications ]]; then apps=/Applications; else apps="$HOME/Applications"; fi
+  mkdir -p "$apps"
+  app="$apps/Call Captions.app"
+  # Prefer Homebrew's stable path, which survives upgrades, over this version's folder.
+  cli="$here/bin/call-captions"
+  [[ -x /opt/homebrew/bin/call-captions ]] && cli=/opt/homebrew/bin/call-captions
+
+  rm -rf "$app"
+  mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+  cp "$here/app/Info.plist" "$app/Contents/Info.plist"
+  cp "$here/app/AppIcon.icns" "$app/Contents/Resources/AppIcon.icns"
+  sed -e "s|__CLI__|$cli|" -e "s|__DATA__|$data|" "$here/app/launcher.sh" >"$app/Contents/MacOS/CallCaptions"
+  chmod 755 "$app/Contents/MacOS/CallCaptions"
+  echo "$app" >"$data/.app-path"
+  local lsregister=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister
+  if [[ -x "$lsregister" ]]; then "$lsregister" -f "$app" || true; fi
+  echo "==> Added $app"
+}
+
+# Files left by the earlier script-based installer. Settings, Python and models are kept.
+remove_old_install() {
+  [[ -f "$data/install.sh" && -f "$data/live_captions.py" ]] || return 0
+  echo "==> Tidying up the earlier install in $data (keeping your settings and models)"
+  if grep -qx gh "$data/.brew-formulae" 2>/dev/null; then
+    echo "    The earlier installer added the GitHub CLI. If you don't use it: brew uninstall gh"
+  fi
+  local f
+  for f in live_captions.py requirements.txt run.sh install.sh uninstall.sh make-app.sh README.md \
+           .brew-formulae .brew-casks .homebrew-installed-by-us; do
+    rm -f "$data/$f"
+  done
+  rm -rf "$data/app" "$data/dist"
+}
+
+setup() {
+  mkdir -p "$data"
+  remove_old_install
+  ensure_env
+  echo "==> Downloading and warming up the models (about 2 GB the first time)"
+  "$py" "$here/live_captions.py" --prefetch
+  if [[ ! -f "$data/options.txt" ]]; then
+    cat >"$data/options.txt" <<'EOF'
+# Options the Call Captions app uses, the same flags as `call-captions help` lists.
+# Lines starting with # are ignored. Remove the # in front of a line to use it.
+# --device "BlackHole 2ch"
+# --hint "株式会社サンプル 山田"
+# --english-only
+EOF
+  fi
+  build_app
+  if ! compgen -G "/Library/Audio/Plug-Ins/HAL/BlackHole*.driver" >/dev/null; then
+    echo
+    echo "No BlackHole audio driver found. Call audio reaches the captioner through one:"
+    echo "  brew install --cask blackhole-2ch"
+  fi
+  cat <<EOF
+
+Ready. Double-click "Call Captions" in Applications, or run: call-captions
+Settings: $data/options.txt
+Call audio routing (one time): https://github.com/jinreiyu/call-captions#route-the-call-into-the-mac
+EOF
+}
+
+uninstall() {
+  if [[ "$data" == "/" || "$data" == "$HOME" || ! -d "$data" ]]; then
+    echo "Nothing to remove at $data"
+  else
+    local answer=""
+    read -r -p "Remove the Call Captions app and everything in $data (models, settings)? [y/N] " answer || true
+    [[ "$answer" == [yY]* ]] || { echo "Cancelled."; exit 0; }
+    local app
+    app="$(cat "$data/.app-path" 2>/dev/null || true)"
+    if [[ "$app" == */"Call Captions.app" && -d "$app" ]]; then rm -rf "$app"; fi
+    tccutil reset AppleEvents local.callcaptions.launcher &>/dev/null || true
+    rm -rf "$data"
+    echo "Removed the app and $data."
+  fi
+  cat <<'EOF'
+To remove the command itself:  brew uninstall call-captions
+Left alone: your BlackHole driver and the Multi-Output Device in Audio MIDI Setup.
+EOF
+}
+
+case "${1:-}" in
+  setup) setup ;;
+  app) build_app ;;
+  uninstall) uninstall ;;
+  version | --version) echo "call-captions $VERSION" ;;
+  help | -h | --help)
+    usage
+    if [[ -x "$py" ]]; then echo; "$py" "$here/live_captions.py" --help; fi
+    ;;
+  *)
+    if [[ ! -x "$py" ]]; then
+      echo "Call Captions isn't set up yet. Run: call-captions setup" >&2
+      exit 1
+    fi
+    ensure_env
+    exec "$py" "$here/live_captions.py" "$@"
+    ;;
+esac

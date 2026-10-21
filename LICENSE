@@ -1,0 +1,14 @@
+Copyright (c) 2026 jinreiyu@gmail.com. All rights reserved.
+
+This software and its source code are proprietary. They are made publicly visible so they can
+be installed with Homebrew, but no license is granted to copy, modify, merge, publish,
+distribute, sublicense or sell copies of the software, in whole or in part, without prior
+written permission from the copyright holder.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING
+BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES OR
+OTHER LIABILITY ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR ITS USE.
+
+Third-party components used by this software at runtime (Python packages and machine-learning
+models downloaded during setup) are covered by their own licenses.
