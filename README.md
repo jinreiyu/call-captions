@@ -289,15 +289,22 @@ device (so you can reinstall or roll back without setting up again).
 
 ## Versions and rollback
 
-The latest version is 1.8.0: turbo (the Neural Engine) and the Mac's system voice (Siri) by
-default, and the word lookup shows and speaks in the captions window. Lines finish as soon as a
-sentence ends since 1.7, and the voice is on by default since 1.5.0. Version 1.2.0 is a
-milestone: confirmed working and kept installable. To stay on your current version,
-`brew pin call-captions`. If an update ever breaks something:
+Milestones are versions confirmed working on a real Mac and kept installable:
+
+| Milestone | Version | What it has |
+| --- | --- | --- |
+| 2 | 1.10.0 | The voice (Siri, 2x), turbo on the Neural Engine, lines at sentence ends, word lookup |
+| 1 | 1.2.0 | Captions with automatic sound routing |
+
+To stay on your current version, `brew pin call-captions`. If an update ever breaks something,
+go back to milestone 2:
 
 ```bash
-brew uninstall call-captions && brew install jinreiyu/tap/call-captions-1.2.0 && call-captions
+brew uninstall call-captions && brew install jinreiyu/tap/call-captions-1.10.0 && call-captions
 ```
+
+Back to the latest later: `brew uninstall call-captions-1.10.0 && brew install
+jinreiyu/tap/call-captions`. Milestone 1 is `call-captions-1.2.0` the same way.
 
 Your settings and sound routing are kept. See [CHANGELOG.md](CHANGELOG.md) for versions and
 [docs/PROJECT.md](docs/PROJECT.md) for how everything works.

@@ -8,7 +8,7 @@
 # removed without asking.
 set -euo pipefail
 
-VERSION="1.10.0"
+VERSION="1.10.1"
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 settings="${CALL_CAPTIONS_HOME:-$HOME/call-captions}"
 py="$here/venv/bin/python"
@@ -123,7 +123,11 @@ ${b}SETUP${r}
   call-captions uninstall        remove everything (BlackHole is never touched)
 
 ${b}IF AN UPDATE BREAKS SOMETHING${r}
-  brew uninstall call-captions && brew install jinreiyu/tap/call-captions-1.2.0
+  Go back to milestone 2 (1.10.0, confirmed working):
+    brew uninstall call-captions && brew install jinreiyu/tap/call-captions-1.10.0
+  Back to the latest version later:
+    brew uninstall call-captions-1.10.0 && brew install jinreiyu/tap/call-captions
+  Your settings, options.txt and sound routing stay; the models download again (about 5 GB).
 
   call-captions help all         the same, plus the technical list of every option
 EOF

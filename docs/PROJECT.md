@@ -316,7 +316,8 @@ explanation start together.
 | `requirements.txt` | Python packages |
 
 In [jinreiyu/homebrew-tap](https://github.com/jinreiyu/homebrew-tap):
-`Formula/call-captions.rb` (latest) and `Formula/call-captions-1.2.0.rb` (milestone).
+`Formula/call-captions.rb` (latest), `Formula/call-captions-1.10.0.rb` (milestone 2) and
+`Formula/call-captions-1.2.0.rb` (milestone 1).
 
 ## Install design (Homebrew)
 
@@ -415,7 +416,10 @@ Development happened in a Linux container without a Mac, so testing was split:
 - **CoreAudio helper**: compiled and linked against Apple's macOS 14.5 SDK for arm64 with
   `-Wall -Wextra`, no warnings; all symbols resolve. Its logic in `call-captions` was tested
   against a stand-in that simulates the Mac's devices, including Ctrl+C restoring the output.
-- **On a real Mac**: version 1.2.0 confirmed working end to end, which made it milestone 1.2.0.
+- **On a real Mac**: version 1.2.0 confirmed working end to end, which made it milestone 1
+  (1.2.0); version 1.10.0 likewise became milestone 2 (1.10.0). Its formula was also checked with
+  real Homebrew on Linux (a test copy without the macOS-only lines): install, the renamed
+  uninstall and postinstall commands inside it, rollback from the latest and back.
 - **1.3.0** (not yet confirmed on a Mac):
   - The `monitor` helper was compiled against the macOS 14.5 SDK with no warnings. Its mixing and
     queueing code was run on Linux with a stand-in for CoreAudio, checking left = speech in

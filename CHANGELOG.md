@@ -3,9 +3,23 @@
 Milestones are versions confirmed working on a real Mac. Each is kept installable for rollback
 as `brew install jinreiyu/tap/call-captions-X.Y.Z` and on the `milestone/vX.Y.Z` branch.
 
-## 1.10.0
+## 1.10.1
 
-Not a milestone yet: roll back with `call-captions-1.2.0` if anything is wrong.
+- `call-captions help` and the docs point at milestone 2 (`call-captions-1.10.0`) for rollback.
+  Nothing else changed.
+
+## 1.10.0 (milestone 2)
+
+Confirmed working on a real Mac. Code: `milestone/v1.10.0` (commit `f7e3b54`). Rollback formula:
+`call-captions-1.10.0`:
+
+```bash
+brew uninstall call-captions && brew install jinreiyu/tap/call-captions-1.10.0
+```
+
+Everything since 1.2.0 is in it: the voice in your left ear (Siri as the system voice, 2x), turbo
+(the Neural Engine), lines that finish at sentence ends, and the word lookup in the captions
+window.
 
 - Word lookups are shown but no longer said: on a call, the spoken meaning came between the live
   lines. `--lookup-voice` brings it back.
@@ -169,7 +183,7 @@ Not a milestone yet: roll back with `call-captions-1.2.0` if anything is wrong.
 - `--asr qwen3` and `--asr qwen3-small`: Qwen3-ASR (Alibaba, Apache-2.0) on MLX.
 - `call-captions bench AUDIO`: compares the speech models' speed and text on your own recording.
 
-## 1.2.0 (milestone)
+## 1.2.0 (milestone 1)
 
 Code: `milestone/v1.2.0` (commit `8b6f78e`). Rollback formula: `call-captions-1.2.0`.
 
