@@ -1,10 +1,10 @@
 #!/bin/bash
 # Call Captions.app: opens iTerm2 (or Terminal) running `call-captions` with the options in
-# the data folder's options.txt. The captioner runs inside the terminal so it uses the
+# ~/call-captions/options.txt. The captioner runs inside the terminal so it uses the
 # terminal's microphone permission, which reading BlackHole needs.
-# `call-captions app` fills in the two paths below when it builds the app.
+# `call-captions` fills in the two paths below when it builds the app.
 cli="__CLI__"
-data="__DATA__"
+settings="__SETTINGS__"
 export PATH="$PATH:/usr/bin:/bin"
 
 alert() {
@@ -15,8 +15,8 @@ end run
 EOF
 }
 
-if [[ ! -x "$cli" || ! -x "$data/.venv/bin/python" ]]; then
-  alert "Call Captions isn't set up yet. In Terminal, run: call-captions setup"
+if [[ ! -x "$cli" ]]; then
+  alert "Call Captions isn't installed. In Terminal, run: brew install jinreiyu/tap/call-captions"
   exit 1
 fi
 
@@ -27,14 +27,14 @@ else
 fi
 
 # Already running: bring its window forward instead of starting a second copy.
-if pgrep -f "$data/.venv/bin/python .*live_captions.py" >/dev/null; then
+if pgrep -f "call-captions/.*/venv/bin/python .*live_captions.py" >/dev/null; then
   osascript -e "tell application id \"$term\" to activate" >/dev/null 2>&1
   exit 0
 fi
 
 opts=""
-if [[ -f "$data/options.txt" ]]; then
-  opts="$(grep -v '^[[:space:]]*#' "$data/options.txt" | tr '\n' ' ')"
+if [[ -f "$settings/options.txt" ]]; then
+  opts="$(grep -v '^[[:space:]]*#' "$settings/options.txt" | tr '\n' ' ')"
 fi
 printf -v run '%q' "$cli"
 cmd="clear; $run $opts"

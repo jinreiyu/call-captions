@@ -20,20 +20,29 @@ Needs an Apple Silicon Mac (M1 or newer) with macOS 14 or later, and [Homebrew](
 
 ```bash
 brew install jinreiyu/tap/call-captions
-call-captions setup
 ```
 
-`setup` installs Python and the packages and downloads the models (about 2 GB) into
-`~/call-captions`, then adds **Call Captions** to your Applications folder.
+That one command installs everything: the program, its own Python, the packages and the speech
+and translation models (about 2 GB). All of it goes into Homebrew's folder for Call Captions, so
+`brew uninstall` removes all of it again. Upgrades (`brew upgrade call-captions`) reuse the models.
 
-Call audio reaches the captioner through a [BlackHole](https://github.com/ExistentialAudio/BlackHole)
-loopback driver. Any BlackHole works (2ch, 16ch or 64ch). If you have none:
+Then start it once:
 
 ```bash
-brew install --cask blackhole-2ch
+call-captions
 ```
 
-Update with `brew upgrade call-captions`. The next run updates the Python packages if needed.
+The first run adds **Call Captions** to your Applications folder and creates your settings file
+(`~/call-captions/options.txt`). It also:
+
+- **BlackHole:** call audio reaches the captioner through a
+  [BlackHole](https://github.com/ExistentialAudio/BlackHole) loopback driver. If you already have
+  any BlackHole (2ch, 16ch or 64ch) it uses yours and sets it in your settings. Only if you have
+  none does it **ask** whether to install BlackHole 2ch. It never installs a second one.
+- **Older installs:** if an earlier version left Python and models in `~/call-captions`, it asks
+  whether to delete them, keeping your `options.txt`.
+
+`call-captions setup` runs the same checks without starting the captions.
 
 ## Route the call into the Mac
 
@@ -127,11 +136,14 @@ The models are downloaded from Hugging Face during setup and are covered by thei
 
 ```bash
 call-captions uninstall
-brew uninstall call-captions
 ```
 
-The first removes the app and `~/call-captions` (models and settings). Your BlackHole driver and
-the Multi-Output Device are left alone.
+One command removes the app, your settings and, through Homebrew, the program with its Python
+and models. Homebrew also removes helpers it installed only for Call Captions (such as `uv`);
+anything you installed yourself stays. It never touches BlackHole or the Multi-Output Device.
+
+Running only `brew uninstall call-captions` removes the program, Python and models too, and
+leaves just the small app launcher and `~/call-captions/options.txt`.
 
 ## License
 

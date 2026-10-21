@@ -471,10 +471,23 @@ def main():
     ap.add_argument("--vad-threshold", type=float, default=0.5, help="speech probability threshold [0.5]")
     ap.add_argument("--log", help="append a transcript (time, Japanese, English) to this file")
     ap.add_argument("--prefetch", action="store_true", help="download and warm up the models, then exit")
+    ap.add_argument("--download-only", action="store_true", help="download the models without loading them, then exit")
     args = ap.parse_args()
 
     if args.list_devices:
         list_devices()
+        return
+
+    if args.download_only:
+        from huggingface_hub import snapshot_download
+
+        repos = [ASR_MODELS.get(args.asr, args.asr)]
+        if args.mt != "none":
+            repos.append(MT_MODELS.get(args.mt, args.mt))
+        for repo in repos:
+            if "/" in repo:  # a Hugging Face repo, not a local path or model alias
+                print(f"    {repo}", flush=True)
+                snapshot_download(repo)
         return
 
     screen = Screen(args.english_only, not args.no_timing, args.log)
