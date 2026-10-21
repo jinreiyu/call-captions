@@ -149,22 +149,27 @@ Highlight Japanese in the captions with the mouse. The **lookup pane** beside th
 - iTerm2 copies whatever you highlight, which is how the pane sees it. In Terminal, press Cmd+C
   after highlighting. Nothing is saved and nothing leaves the Mac.
 
-## Turbo: every chip on its own job
+## Speed
+
+**Quick end (on by default since 1.7):** a line shows as soon as a sentence ends (。？) instead of
+after the full half-second pause. On an M4 Mac mini, on a real voicemail played like a call, the
+English appeared **0.40 s** after the speaker stopped on average (slowest 0.44 s), against 0.62 s
+(slowest 0.77 s) before. Sentences also come out one per line, which the translator handles
+better. `--no-quick-end` brings back the old behaviour.
+
+**Turbo (`--turbo`, still being tested):** the heavy part of speech recognition (Parakeet's
+encoder) moves to the Mac's **Neural Engine**, about 1.7x faster than the GPU there (0.07 to 0.13 s
+per sentence against 0.12 to 0.21 s). Core ML crashed next to the live captioner on a real Mac, so
+since 1.7 it runs in a helper process of its own: if it ever stops, the captions switch to the GPU
+on the spot and carry on.
 
 ```bash
 call-captions --turbo
 ```
 
-The heavy part of speech recognition (Parakeet's encoder) moves to the Mac's **Neural Engine**,
-about 3x faster on an M4 Mac mini (that part measured 0.03 to 0.07 s per sentence, against 0.12
-to 0.24 s for the whole GPU version). The
-words are still read off by Parakeet's own decoder, so the text matches the normal version. A line
-also shows as soon as a sentence ends (。？) instead of waiting out the full pause. If the Neural
-Engine model can't load, it falls back to the GPU version by itself.
-
 | Job | Normal | `--turbo` |
 | --- | --- | --- |
-| Hearing Japanese | GPU | Neural Engine (encoder), GPU (decoder, a few ms) |
+| Hearing Japanese | GPU | Neural Engine (encoder, in a helper process), GPU (decoder) |
 | Translating | GPU | GPU |
 | Word lookup | CPU | CPU |
 | Voice | CPU | CPU |
@@ -176,20 +181,19 @@ call-captions bench ~/Downloads/voicemail.m4a
 ```
 
 Plays your recording in real time through three set-ups and times each line from the end of
-speech to the English on screen: **control** (the current version), **quick** (the same, plus
-`--quick-end`: a line finishes as soon as a sentence ends) and **turbo** (`--turbo`: quick plus the
-Neural Engine). Each runs in a process of its own, like a real session, so if one crashes the bench
+speech to the English on screen: **control** (as up to 1.6: a line after the full pause),
+**quick** (the default since 1.7) and **turbo** (`--turbo`: quick plus the Neural Engine). Each runs in a process of its own, like a real session, so if one crashes the bench
 says where and carries on. Then it times the word lookup and runs the fastest set-up again while
 lookups fire every second, to show the lookup doesn't slow it down.
 Add `--models parakeet,parakeet-ane,qwen3,kotoba` to also compare other speech models (first use
-downloads them). Put the winner (`--quick-end` or `--turbo`) in `options.txt`.
+downloads them). If turbo wins on your Mac, put `--turbo` in `options.txt`.
 
 ## Options
 
 | Option | What it does |
 | --- | --- |
 | `--turbo` | Speech recognition's encoder on the Neural Engine, and lines finish at sentence ends. |
-| `--quick-end` | A line finishes as soon as a sentence ends (。？) instead of after the full pause. Any speech model. |
+| `--no-quick-end` | Wait out the full pause before finishing a line, as up to 1.6. (By default a line finishes as soon as a sentence ends.) |
 | `--asr parakeet` | Default. NVIDIA Parakeet TDT-CTC 0.6B Japanese on the GPU. Adds punctuation. Spells English names as it hears them. |
 | `--asr parakeet-ane` | The same Parakeet on the Neural Engine (Core ML). `--turbo` uses it. |
 | `--asr qwen3` | Qwen3-ASR 1.7B (8-bit). Most accurate on natural conversation in published tests; slower. |
@@ -205,7 +209,7 @@ downloads them). Put the winner (`--quick-end` or `--turbo`) in `options.txt`.
 | `--english-only` | Hide the Japanese lines. |
 | `--no-partials` | Only show finished sentences. |
 | `--end-silence 0.4` | Pause (seconds) that ends a sentence. Default 0.5. Shorter is sooner but can cut sentences in two. |
-| `--early 0.25` | Start the final text after this much pause, before knowing it ends the sentence. Same text, sooner. `0` turns it off. 0.15 with `--turbo`. |
+| `--early 0.15` | Start the final text after this much pause, before knowing it ends the sentence. Same text, sooner. `0` turns it off. 0.25 with `--no-quick-end`. |
 | `--no-lookup` | (in `options.txt`) The app doesn't open the word lookup pane. |
 | `--log calls.txt` | Save a transcript (time, Japanese, English). |
 | `--device NAME` | Input to listen on. Default: the first device named BlackHole. |
@@ -268,8 +272,9 @@ device (so you can reinstall or roll back without setting up again).
 
 ## Versions and rollback
 
-The latest version is 1.6.0: the word lookup pane, `--turbo` and the control-vs-turbo bench. The
-voice is on by default since 1.5.0. Version 1.2.0 is a
+The latest version is 1.7.0: lines finish as soon as a sentence ends, `--turbo` runs the Neural
+Engine in a crash-proof helper, and the word lookup pane (1.6). The voice is on by default since
+1.5.0. Version 1.2.0 is a
 milestone: confirmed working and kept installable. To stay on your current version,
 `brew pin call-captions`. If an update ever breaks something:
 

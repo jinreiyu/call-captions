@@ -215,9 +215,21 @@ The Mac has three separate engines: CPU, GPU and Neural Engine. `--turbo`:
   Core ML encoder's output goes to Parakeet's TDT decoder on MLX instead, the same one the GPU
   version uses; on the voicemail that path gives exactly the GPU version's text. The CTC head
   stays as a fallback if the MLX model can't load.
-- **Sooner at a pause:** the early transcription starts at a 0.15 s pause (0.25 s otherwise). If
-  Parakeet's text then ends a sentence (。？！), the line is finished there instead of waiting
-  for the 0.5 s pause. Stand-in tests had shown this pause, not the chip, to be the main limit.
+- **Sooner at a pause (`--quick-end`, the default since 1.7):** the early transcription starts at
+  a 0.15 s pause (0.25 s otherwise). If Parakeet's text then ends a sentence (。？！), the line is
+  finished there instead of waiting for the 0.5 s pause. On the owner's M4 Mac mini (bench, real
+  voicemail played in real time): control 0.62 s average / 0.77 s slowest from the end of speech
+  to the English on screen; quick 0.40 s / 0.44 s; quick with a word lookup every second 0.42 s /
+  0.48 s. Quick split the three utterances into five sentence lines, with the same words, and
+  translated them better (お世話になります → "I'm sorry to bother you." instead of control's
+  "I'm Hotta from … My name is Hotta.").
+- **Core ML in a helper process (1.7):** 1.6.0 to 1.6.2 crashed with a segmentation fault as the
+  turbo race started. The 1.6.2 report showed every Python thread idle (the captioner waiting for
+  audio), so the crash was in one of Core ML's own background threads; the same model worked in
+  the bench's model test, where the live pipeline (voice-activity model, audio thread) wasn't
+  running. Since 1.7 Core ML runs only in a helper process that exchanges audio and text over a
+  pipe; the captioner never imports coremltools, keeps Parakeet on the GPU loaded as a backup and
+  switches to it on the spot if the helper stops (its crash report goes to a log file).
 - **The Neural Engine model:** a fixed 15 s window (shorter audio is padded). Its vocabulary is
   identical to the MLX build's. If it can't load, the captioner falls back to the GPU Parakeet.
 - **Parakeet stopping after one sentence**, now handled for both decoders: on a real voicemail,

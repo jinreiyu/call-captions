@@ -8,7 +8,7 @@
 # removed without asking.
 set -euo pipefail
 
-VERSION="1.6.2"
+VERSION="1.7.0"
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 settings="${CALL_CAPTIONS_HOME:-$HOME/call-captions}"
 py="$here/venv/bin/python"
@@ -47,7 +47,7 @@ ${b}WORD LOOKUP${r}
 ${b}CHECK IT${r}
   call-captions test-voice       hear "Left ear…" on the left and "Right ear…" on the right
   call-captions --file AUDIO     run a recording through it, e.g. a voicemail
-  call-captions bench AUDIO      race the current version against --turbo on your recording,
+  call-captions bench AUDIO      race the old way, the default and --turbo on your recording,
                                  and time the word lookup
 
 ${b}VOICE${r}
@@ -59,8 +59,9 @@ ${b}VOICE${r}
   Headphones only: on speakers the voice turns itself off so the caller can't hear it.
 
 ${b}SPEED AND ACCURACY${r}
-  --quick-end                    a line shows as soon as a sentence ends, not after the full pause
-  --turbo                        --quick-end plus speech recognition on the Neural Engine
+  --no-quick-end                 wait out the full pause before showing a line (by default a line
+                                 shows as soon as a sentence ends)
+  --turbo                        speech recognition on the Neural Engine (being tested)
   --asr qwen3                    more accurate speech recognition, a bit slower
                                  (default: parakeet, the fastest)
   --hint "株式会社サンプル 山田" names you expect (works with --asr qwen3 or --asr kotoba)

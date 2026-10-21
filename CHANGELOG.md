@@ -3,6 +3,22 @@
 Milestones are versions confirmed working on a real Mac. Each is kept installable for rollback
 as `brew install jinreiyu/tap/call-captions-X.Y.Z` and on the `milestone/vX.Y.Z` branch.
 
+## 1.7.0
+
+Not a milestone yet: roll back with `call-captions-1.2.0` if anything is wrong.
+
+- **Lines finish as soon as a sentence ends** (quick end) by default: on an M4 Mac mini the English
+  showed 0.40 s after the speaker stopped on average instead of 0.62 s (slowest 0.44 s instead of
+  0.77 s), with one sentence per line. `--no-quick-end` brings back the old behaviour.
+- **`--turbo` can't crash the captions any more:** Core ML (the Neural Engine) crashed in one of its
+  own threads next to the live captioner, so it now runs in a helper process. If the helper stops,
+  the captions switch to Parakeet on the GPU, loaded ahead for this, on the spot.
+- `bench` compares the races' words ignoring how they're split into lines (it said "0 of 3 the same"
+  when quick had only split the sentences).
+- The lookup's explanation is shown as the model wrote it, a full sentence, instead of trimmed into
+  a fragment.
+- The word lookup stops at once when closed, models included, even with lookups still queued.
+
 ## 1.6.2
 
 Not a milestone yet: roll back with `call-captions-1.2.0` if anything is wrong.

@@ -221,6 +221,74 @@ class ParakeetANE:
         return keep_going(self._once, audio)
 
 
+class NeuralEngineHelper:
+    """ParakeetANE in a helper process of its own. On a real Mac, Core ML crashed the whole program
+    (a segmentation fault in one of its own background threads, while Python sat idle) as soon as
+    it ran next to the live captioner, though it worked fine on its own. Here a crash can only end
+    the helper: the captioner switches to Parakeet on the GPU, loaded ahead for that, and carries
+    on. The helper's own crash report goes to LOG."""
+
+    LOG = os.path.join(tempfile.gettempdir(), "call-captions-neural-engine.log")
+
+    def __init__(self, repo, hint):
+        import subprocess
+
+        self.hint, self.fallback, self.on_fallback = hint, None, None
+        self.log = open(self.LOG, "w")
+        self.proc = subprocess.Popen([sys.executable, os.path.abspath(__file__), "--neural-engine-helper", repo],
+                                     stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.log)
+        if self.proc.stdout.readline().strip() != b"ready":
+            self.proc.kill()
+            raise RuntimeError(f"the Neural Engine helper didn't start (see {self.LOG})")
+        self.backup = ParakeetASR(ASR_MODELS["parakeet"], hint)  # ready in case the helper stops
+
+    def __call__(self, audio, final=True):
+        if self.fallback is None:
+            try:
+                data = np.ascontiguousarray(audio, "<f4").tobytes()
+                self.proc.stdin.write(struct.pack("<i", len(data) // 4) + data)
+                self.proc.stdin.flush()
+                size = struct.unpack("<i", self._read(4))[0]
+                return self._read(size).decode("utf-8")
+            except (OSError, ValueError, struct.error):
+                self.fallback = self.backup
+                if self.on_fallback:
+                    self.on_fallback(f"! The Neural Engine stopped; using Parakeet on the GPU (details: {self.LOG})")
+        return self.fallback(audio, final)
+
+    def close(self):
+        try:
+            self.proc.stdin.close()  # the helper exits when its input ends
+            self.proc.wait(timeout=5)
+        except Exception:
+            self.proc.kill()
+
+    def _read(self, n):
+        data = self.proc.stdout.read(n)
+        if len(data) != n:
+            raise ValueError("the Neural Engine helper stopped")
+        return data
+
+
+def neural_engine_helper(repo):
+    """The helper's side: hear audio sent on stdin with ParakeetANE and answer with the text."""
+    asr = ParakeetANE(repo, "")
+    asr(np.zeros(SR, np.float32))
+    out = sys.stdout.buffer
+    out.write(b"ready\n")
+    out.flush()
+    inp = sys.stdin.buffer
+    while True:
+        head = inp.read(4)
+        if len(head) < 4:
+            return
+        n = struct.unpack("<i", head)[0]
+        audio = np.frombuffer(inp.read(4 * n), "<f4")
+        text = asr(audio).encode("utf-8")
+        out.write(struct.pack("<i", len(text)) + text)
+        out.flush()
+
+
 class QwenASR:
     def __init__(self, repo, hint):
         from mlx_qwen3_asr import Session
@@ -255,7 +323,7 @@ def make_asr(choice, hint):
         return FasterWhisperASR(choice.partition(":")[2] or ASR_MODELS["cpu"], hint)
     repo = ASR_MODELS.get(choice, choice)
     if "coreml" in repo.lower():
-        return ParakeetANE(repo, hint)
+        return NeuralEngineHelper(repo, hint)
     if "parakeet" in repo:
         return ParakeetASR(repo, hint)
     if "qwen3-asr" in repo.lower():
@@ -939,6 +1007,8 @@ def bench_models(args, utts, mt):
             if mt is not None and ja:
                 print(f"          {YELLOW}➜ {mt(ja)}{RESET}", flush=True)
         summary[name] = (sum(times) / len(times), max(times))
+        if hasattr(asr, "close"):
+            asr.close()
         del asr
         gc.collect()
     return summary
@@ -962,9 +1032,9 @@ class BenchScreen(Screen):
 
 # The live races bench runs: (speech model, finish lines at sentence ends, what it is)
 RACES = {
-    "control": ("parakeet", False, "version 1.5: Parakeet on the GPU, a line after the full 0.5 s pause"),
-    "quick": ("parakeet", True, "Parakeet on the GPU; a line finishes as soon as a sentence ends"),
-    "turbo": ("parakeet-ane", True, "Parakeet's encoder on the Neural Engine; a line finishes as soon as a sentence ends"),
+    "control": ("parakeet", False, "as up to 1.6: Parakeet on the GPU, a line after the full 0.5 s pause"),
+    "quick": ("parakeet", True, "the default since 1.7: Parakeet on the GPU; a line finishes as soon as a sentence ends"),
+    "turbo": ("parakeet-ane", True, "quick, with Parakeet's encoder on the Neural Engine in a helper process"),
 }
 
 
@@ -1004,6 +1074,8 @@ def race_child(args):
         mt = Translator(args.mt)
         mt("もしもし、聞こえますか？")
     asr = make_asr(asr_name, "")
+    if isinstance(asr, NeuralEngineHelper):
+        asr.on_fallback = lambda message: print("  " + message, flush=True)
     asr(np.zeros(SR, np.float32))
     print("RACE_START", flush=True)
     lines = race(args, asr, mt, fast, pcm)
@@ -1122,9 +1194,9 @@ def bench(args):
             if lines:
                 results[f"{best} + lookups"] = lines
         finally:
+            proc.terminate()  # it stops its models and exits, skipping any phrases still queued
             try:
-                proc.stdin.close()  # it then stops its models and exits
-                proc.wait(timeout=15)
+                proc.wait(timeout=10)
             except Exception:
                 proc.kill()  # its models' watchdog still stops them
 
@@ -1141,10 +1213,15 @@ def bench(args):
         base = base or avg
         gain = f"  {base / avg:4.1f}x sooner than control" if name != "control" else ""
         print(f"  {name:<26} {avg:5.2f} s average  {max(lat):5.2f} s slowest{gain}")
+    def words(lines):  # what was heard, however it was split into lines and punctuated
+        return re.sub(r"[\s、。，．,.？！?!]", "", "".join(l["ja"] for l in lines))
+
     for mode in ("quick", "turbo"):
         if mode in results and "control" in results:
-            same = [a["ja"] == b["ja"] for a, b in zip(results["control"], results[mode])]
-            print(f"  {DIM}{mode} heard {sum(same)} of {len(same)} sentences exactly like control{RESET}")
+            same = words(results[mode]) == words(results["control"])
+            print(f"  {DIM}{mode}: {len(results[mode])} lines, "
+                  + ("the same words as control" if same else "some words differ from control (see the lines above)")
+                  + RESET)
     if lookups:
         keys = [k for k in lookups[0]]
         print("  lookup (CPU)              " + "  ".join(
@@ -1196,9 +1273,11 @@ def main():
     ap.add_argument("--turbo", action="store_true",
                     help="Parakeet's encoder on the Neural Engine (about 3x faster), and a line finishes as soon as "
                          "a sentence ends (。？). Compare with: call-captions bench")
-    ap.add_argument("--quick-end", action="store_true",
-                    help="finish a line as soon as a sentence ends (。？), after a 0.15 s pause, on any speech "
-                         "model (part of --turbo)")
+    ap.add_argument("--no-quick-end", dest="quick_end", action="store_false",
+                    help="wait out the full pause before finishing a line, as before 1.7")
+    ap.add_argument("--quick-end", dest="quick_end", action="store_true", default=True,
+                    help="finish a line as soon as a sentence ends (。？), after a 0.15 s pause (the default "
+                         "since 1.7)")
     ap.add_argument("--end-silence", type=float, default=0.5, help="pause (s) that ends an utterance [0.5]")
     ap.add_argument("--early", type=float,
                     help="start the final transcription after this pause (s), before it is known to end the "
@@ -1211,9 +1290,14 @@ def main():
     ap.add_argument("--download-only", action="store_true", help="download the models without loading them, then exit")
     ap.add_argument("--bench", metavar="AUDIO", help="compare the speech models on an audio file, then exit")
     ap.add_argument("--race", choices=list(RACES), help=argparse.SUPPRESS)  # bench runs each race this way
+    ap.add_argument("--neural-engine-helper", metavar="REPO", help=argparse.SUPPRESS)  # see NeuralEngineHelper
     ap.add_argument("--models", default="parakeet,parakeet-ane",
                     help="speech models for --bench, e.g. parakeet,parakeet-ane,qwen3,kotoba [parakeet,parakeet-ane]")
     args = ap.parse_args()
+
+    if args.neural_engine_helper:
+        neural_engine_helper(args.neural_engine_helper)
+        return
 
     if args.race:
         race_child(args)
@@ -1272,12 +1356,14 @@ def main():
     if args.early is None:
         args.early = 0.15 if args.quick_end else 0.25
     asr = load_asr(args, screen)
-    if args.hint and isinstance(asr, (ParakeetASR, ParakeetANE)):
+    if isinstance(asr, NeuralEngineHelper):
+        asr.on_fallback = screen.info
+    if args.hint and isinstance(asr, (ParakeetASR, NeuralEngineHelper)):
         screen.info("  --hint has no effect on Parakeet; --asr qwen3 or --asr kotoba use it")
     t = time.monotonic()
     asr(np.zeros(SR, np.float32))
     screen.info(f"  ready, warm-up {time.monotonic() - t:.1f}s")
-    if args.turbo and isinstance(asr, ParakeetANE):
+    if args.turbo and isinstance(asr, NeuralEngineHelper):
         screen.info("  turbo: Parakeet's encoder on the Neural Engine; lines finish at sentence ends")
 
     mt = None

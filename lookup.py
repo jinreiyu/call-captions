@@ -19,6 +19,7 @@ import json
 import os
 import re
 import shutil
+import signal
 import socket
 import sqlite3
 import subprocess
@@ -42,7 +43,6 @@ EXPLAIN_PROMPT = (
     "with one sentence of at most 20 words: what the phrase means here and its politeness (humble, "
     "honorific or polite). Do not repeat the Japanese."
 )
-OPENERS = ("The phrase means ", "This phrase means ", "The phrase ", "This phrase ")
 
 JAPANESE = re.compile(r"[぀-ヿ㐀-鿿ｦ-ﾟ]")
 DIM, BOLD, CYAN, YELLOW, GREEN, RESET = "\033[2m", "\033[1m", "\033[36m", "\033[93m", "\033[32m", "\033[0m"
@@ -316,26 +316,14 @@ class Lookup:
 
         def explain():  # starts with the translation, on its own CPU threads
             try:
-                held = ""  # hold the first words back until any stock opener can be cut
                 stream = self.explainer.chat(EXPLAIN_PROMPT, f"Phrase: {text}\nDictionary: {facts}", 50, stream=True)
                 for piece in stream:
                     if self.current != mine:
                         stream.close()  # hangs up, so llama-server stops writing it
                         break
-                    if held is not None:
-                        held += piece
-                        if len(held) < 20:
-                            continue
-                        for opener in OPENERS:
-                            if held.startswith(opener):
-                                held = held[len(opener):]
-                                break
-                        piece, held = held[:1].upper() + held[1:], None
                     if not pieces:
                         times["explanation, first words"] = time.monotonic() - t0
                     pieces.append(piece)
-                if held:
-                    pieces.append(held)
             except Exception as e:
                 pieces.append(f"(no explanation: {e})")
             finally:
@@ -409,6 +397,7 @@ def main():
                 model_path(repo_file)
         return
 
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))  # stop now, models included
     lookup = Lookup(models=not args.no_models, quiet=args.quiet)
     try:
         if args.bench is not None:
