@@ -8,7 +8,7 @@
 # removed without asking.
 set -euo pipefail
 
-VERSION="1.8.0"
+VERSION="1.9.0"
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 settings="${CALL_CAPTIONS_HOME:-$HOME/call-captions}"
 py="$here/venv/bin/python"
@@ -30,8 +30,8 @@ ${b}Call Captions $VERSION${r}: live English for Japanese phone calls, all on yo
 ${b}WHAT IT DOES${r}
   - Shows what the caller says: the Japanese in cyan, the English below it (yellow ➜).
     Gray lines are drafts while they're still talking; the final line replaces them.
-  - Says the English in your LEFT ear (the Mac's system voice: Siri if you chose it, see VOICE);
-    the call plays in your RIGHT ear.
+  - Says the English in your LEFT ear at 1.5x speed (the Mac's system voice: Siri if you chose
+    it, see VOICE); the call plays in your RIGHT ear.
   - Word lookup: highlight Japanese you don't know and its meaning shows and is said in your ear.
   - Runs entirely on this Mac. Nothing is sent anywhere; the caller hears a normal call.
   - A line shows about 0.4 s after the caller finishes a sentence.
@@ -59,17 +59,23 @@ ${b}VOICE${r} (on by default; headphones only)
   off, so the caller can't hear it.
   Siri: System Settings → Accessibility → Read & Speak (Spoken Content before macOS 26) →
         System voice → choose a Siri voice. Call Captions uses that voice from then on.
+  --voice-speed 2                how fast the voice talks, at the same pitch: 1 = normal speed,
+                                 1.5 = one and a half times (the default), 2 = twice, up to 3
+  --rate 200                     words per minute for the voice itself, before --voice-speed
+                                 (default: the Speaking rate in Read & Speak; not every voice
+                                 follows it; --voice-speed always works)
   --voice Fred                   the classic robot voice, the fastest to start talking
   --voice Samantha               another Mac voice by name (list them: say -v '?'; Siri voices
                                  aren't listed: choose them as the system voice above)
-  --rate 280                     talk faster, in words per minute (default 240)
   --voice-volume 1.5             louder voice, 0 to 2 (default 1)
   --speak mix                    the call in both ears, the English added on the left
   --no-speak                     captions only, no voice
 
 ${b}SPEED AND ACCURACY${r}
-  By default speech recognition runs on the Neural Engine (turbo) and a line shows as soon as a
-  sentence ends (quick end). If the Neural Engine part stops, the GPU takes over at once.
+  Already on for speed: speech recognition on the Neural Engine (turbo), a line shows as soon as
+  a sentence ends (quick end), the final text starts at a 0.15 s pause (--early), and the voice
+  talks at 1.5x (--voice-speed, under VOICE). If the Neural Engine part stops, the GPU takes over.
+  Faster still: --voice-speed 2, --voice Fred, --end-silence 0.4 (below).
   --no-turbo                     speech recognition on the GPU only (as before 1.8; 0.03 s slower,
                                  a few words can come out differently)
   --no-quick-end                 wait out the full pause before showing a line (as before 1.7)

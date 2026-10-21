@@ -542,6 +542,35 @@ def read_wav(path):
     return x[: len(x) // channels * channels].reshape(-1, channels).mean(axis=1), rate
 
 
+def speed_up(pcm, rate, speed):
+    """pcm played speed times as fast, at the same pitch (FFmpeg's atempo filter, through PyAV)."""
+    import av.filter
+    from fractions import Fraction
+
+    graph = av.filter.Graph()
+    last = graph.add_abuffer(format="flt", sample_rate=rate, layout="mono", time_base=Fraction(1, rate))
+    left = speed
+    while abs(left - 1) > 1e-3:  # older FFmpeg takes 0.5 to 2 per atempo
+        step = min(2.0, max(0.5, left))
+        tempo = graph.add("atempo", f"{step:.4f}")
+        last.link_to(tempo)
+        last, left = tempo, left / step
+    sink = graph.add("abuffersink")
+    last.link_to(sink)
+    graph.configure()
+    frame = av.AudioFrame.from_ndarray(pcm.reshape(1, -1).astype(np.float32), format="flt", layout="mono")
+    frame.sample_rate, frame.pts, frame.time_base = rate, 0, Fraction(1, rate)
+    graph.push(frame)
+    graph.push(None)
+    out = []
+    while True:
+        try:
+            out.append(graph.pull().to_ndarray().reshape(-1))
+        except (av.BlockingIOError, av.EOFError):
+            break
+    return np.concatenate(out) if out else pcm[:0]
+
+
 class VoiceOff(Exception):
     """The voice can't run; captions carry on without it."""
 
@@ -571,6 +600,12 @@ def voice_name(voice):
     return "Siri" if siri_is_system_voice() else "the Mac's system voice"
 
 
+def voice_label(args):
+    """E.g. "Siri, 1.5x speed"."""
+    rate = f", {args.rate} words a minute" if args.rate else ""
+    return f"{voice_name(args.voice)}{rate}, {args.voice_speed:g}x speed"
+
+
 class Voice:
     """Says each English line in your left ear with the Mac's built-in speech (`say`), in the
     Mac's system voice (Siri, if you chose it there) unless --voice names another.
@@ -582,11 +617,11 @@ class Voice:
     The English only goes to your headset, never into BlackHole or the call.
     """
 
-    def __init__(self, mode, voice, wpm, volume, screen):
+    def __init__(self, mode, voice, wpm, speed, volume, screen):
         import subprocess
 
         self._sp = subprocess
-        self.screen, self.voice, self.wpm, self.gain = screen, voice or None, wpm, volume
+        self.screen, self.voice, self.wpm, self.speed, self.gain = screen, voice or None, wpm, speed, volume
         self.audio = os.environ.get("CALL_CAPTIONS_AUDIO", "")
         hear = os.environ.get("CALL_CAPTIONS_HEAR", "")
         blackhole = os.environ.get("CALL_CAPTIONS_BLACKHOLE", "")
@@ -657,7 +692,9 @@ class Voice:
             self.cond.notify()
 
     def _synth(self, text):
-        command = ["say", "-r", str(self.wpm), "-o", self.wav, f"--data-format=LEI16@{self.rate}", "-f", "-"]
+        command = ["say", "-o", self.wav, f"--data-format=LEI16@{self.rate}", "-f", "-"]
+        if self.wpm:
+            command[1:1] = ["-r", str(self.wpm)]
         if self.voice:
             command[1:1] = ["-v", self.voice]
         r = self._sp.run(command, input=text.encode(), capture_output=True, timeout=30, start_new_session=True)
@@ -670,7 +707,14 @@ class Voice:
             loud = np.flatnonzero(np.abs(pcm) > 1e-3)
             if len(loud):
                 start = max(0, loud[0] - self.rate // 100)  # skip the silence `say` starts with
-                return (pcm[start : loud[-1] + 1] * self.gain).astype(np.float32)
+                pcm = pcm[start : loud[-1] + 1]
+                if self.speed != 1:
+                    try:
+                        pcm = speed_up(pcm, self.rate, self.speed)
+                    except Exception as e:
+                        self.screen.info(f"! couldn't speed the voice up ({e}); it talks at its normal speed")
+                        self.speed = 1
+                return (pcm * self.gain).astype(np.float32)
             if not any(c.isalnum() for c in text):
                 return pcm[:0]
         # This voice isn't on the Mac or made no sound (a Siri voice still downloading, say): try
@@ -1395,7 +1439,12 @@ def main():
     ap.add_argument("--voice", default="",
                     help="a Mac voice by name, e.g. Fred (the robot, fastest) or Samantha; list them with: say -v '?'. "
                          "Default: the Mac's system voice, Siri if you chose a Siri voice there")
-    ap.add_argument("--rate", type=int, default=240, help="speaking speed, words per minute [240]")
+    ap.add_argument("--voice-speed", type=float, default=1.5,
+                    help="how much faster than normal the voice talks, at the same pitch: 1 is normal, 2 twice as "
+                         "fast, 0.5 to 3 [1.5]")
+    ap.add_argument("--rate", type=int,
+                    help="words per minute for the voice itself, before --voice-speed; not every voice follows it "
+                         "[the Mac's speaking rate]")
     ap.add_argument("--test-voice", action="store_true", help="say a test line in your left ear, then exit")
     ap.add_argument("--no-lookup", action="store_true", help="no word lookup when you highlight Japanese")
     ap.add_argument("--no-lookup-voice", action="store_true",
@@ -1427,6 +1476,8 @@ def main():
     ap.add_argument("--models", default="parakeet,parakeet-ane",
                     help="speech models for --bench, e.g. parakeet,parakeet-ane,qwen3,kotoba [parakeet,parakeet-ane]")
     args = ap.parse_args()
+    if not 0.5 <= args.voice_speed <= 3:
+        ap.error("--voice-speed goes from 0.5 to 3")
 
     if args.neural_engine_helper:
         neural_engine_helper(args.neural_engine_helper)
@@ -1443,20 +1494,20 @@ def main():
     if args.test_voice:
         screen = Screen(False, False, None)
         try:
-            voice = Voice(args.speak or "split", args.voice, args.rate, args.voice_volume, screen)
+            voice = Voice(args.speak or "split", args.voice, args.rate, args.voice_speed, args.voice_volume, screen)
         except VoiceOff as e:
             sys.exit(f"Voice off: {e}")
         import subprocess
 
         try:
-            print(f"Voice: {voice_name(args.voice)}, {args.rate} words a minute", flush=True)
+            print(f"Voice: {voice_label(args)}", flush=True)
             print(f"Left ear ({voice.hear_name}): the English voice …", flush=True)
             voice.say("Left ear. This is where the English goes.")
             voice.drain()
             if voice.switched:  # the Mac's output is BlackHole now: this plays the way a call would
                 time.sleep(0.3)
                 print("Right ear: where the call plays …", flush=True)
-                subprocess.run(["say", "-r", str(args.rate), "Right ear. This is where the call goes."],
+                subprocess.run(["say", *(["-r", str(args.rate)] if args.rate else []), "Right ear. This is where the call goes."],
                                stdin=subprocess.DEVNULL, timeout=30)
                 time.sleep(0.5)
         except KeyboardInterrupt:
@@ -1517,12 +1568,11 @@ def main():
     voice = None
     if args.speak:
         try:
-            voice = Voice(args.speak, args.voice, args.rate, args.voice_volume, screen)
+            voice = Voice(args.speak, args.voice, args.rate, args.voice_speed, args.voice_volume, screen)
             call = "the call in your right ear" if args.speak == "split" else "the call in both ears"
-            name = voice_name(args.voice)
-            screen.info(f"{RESET}{BOLD}Voice on{RESET}{DIM} ({name}): English in your left ear, {call} "
+            screen.info(f"{RESET}{BOLD}Voice on{RESET}{DIM} ({voice_label(args)}): English in your left ear, {call} "
                         f"({voice.hear_name}). --no-speak turns it off.")
-            if name == "the Mac's system voice":
+            if voice_name(args.voice) == "the Mac's system voice":
                 screen.info("  " + SIRI_HOW)
         except VoiceOff as e:
             screen.info(f"{RESET}{YELLOW}! Voice off: {e}{RESET}")

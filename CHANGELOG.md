@@ -3,6 +3,18 @@
 Milestones are versions confirmed working on a real Mac. Each is kept installable for rollback
 as `brew install jinreiyu/tap/call-captions-X.Y.Z` and on the `milestone/vX.Y.Z` branch.
 
+## 1.9.0
+
+Not a milestone yet: roll back with `call-captions-1.2.0` if anything is wrong.
+
+- The voice talks at **1.5x** by default, at the same pitch, whatever the voice (Siri included):
+  `--voice-speed 2` for twice as fast, `1` for normal, up to 3. It speeds up the voice's audio
+  itself, so it doesn't depend on the voice following `say -r`.
+- `--rate` now defaults to the Mac's own speaking rate (Read & Speak) instead of 240 words a
+  minute; `--voice-speed` applies on top.
+- `call-captions help` lists the speed settings, which are on by default and what's left to
+  make it faster.
+
 ## 1.8.0
 
 Not a milestone yet: roll back with `call-captions-1.2.0` if anything is wrong.

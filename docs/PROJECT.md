@@ -118,7 +118,9 @@ After the other person stops talking, a line appears after:
    (a simple formant voice, the quickest to make; the default up to 1.7). Since 1.8 the default
    is the Mac's system voice, which can be a Siri voice: more natural, a little slower to make.
    The draft of a line is made ahead of time, so usually only the final line's audio is waited
-   for.
+   for. Since 1.9 the audio is played 1.5x as fast at the same pitch (`--voice-speed`, FFmpeg's
+   `atempo` through PyAV, about 10 ms a line): it works with any voice, where `say -r` depends on
+   the voice following it.
 
 Since 1.3.0, steps 2 to 4 start at a 0.25 s pause (`--early`) instead of waiting for the full
 0.5 s. If the pause turns out to end the sentence, the result is used as is: the audio is the

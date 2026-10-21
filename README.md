@@ -123,7 +123,11 @@ way a call does).
   it as the system voice. The window says which voice it uses when it starts.
 - `--voice Fred` is the classic robot voice, the quickest to start talking. Any voice from
   `say -v '?'` works, for example `--voice Samantha`.
-- `--rate 240` is the speed in words per minute; faster keeps up better.
+- `--voice-speed 1.5` (the default) plays the voice one and a half times as fast, at the same
+  pitch, whatever the voice (like a podcast at 1.5x). `1` is its normal speed, `2` twice, up to 3.
+  Faster keeps up better.
+- `--rate 200` sets the voice's own words per minute instead (before `--voice-speed`); not every
+  voice follows it.
 - If they keep talking, the voice skips a line rather than falling behind (the line stays on
   screen), so it always speaks the newest sentence.
 - Set the volume on your headset: while the call is in your right ear only, the Mac's volume
@@ -211,7 +215,9 @@ downloads them). If quick suits you better, put `--no-turbo` in `options.txt`.
 | `--hint "..."` | Names you expect; nudges Kotoba-Whisper and Qwen3-ASR toward those spellings. |
 | `--no-speak` | Captions only. By default the English is said in your left ear, the call in your right. |
 | `--speak mix` | Keep the call in both ears; the English is added on the left. |
-| `--voice NAME` / `--rate 240` | Voice (default: the Mac's system voice, Siri if you chose it; `Fred` is the robot) and speed in words per minute. |
+| `--voice NAME` | Voice (default: the Mac's system voice, Siri if you chose it; `Fred` is the robot). |
+| `--voice-speed 1.5` | How fast the voice talks, same pitch: 1 normal, 1.5 default, up to 3. |
+| `--rate 200` | Words per minute for the voice itself, before `--voice-speed`. |
 | `--voice-volume 1.5` | Louder voice, 0 to 2. |
 | `--english-only` | Hide the Japanese lines. |
 | `--no-partials` | Only show finished sentences. |
@@ -262,7 +268,8 @@ are downloaded from EDRDG during setup.
   voice can't run (for example when the sound plays on speakers).
 - **Can't hear the call in your right ear:** stop with Ctrl+C and use `--speak mix`. If the voice
   ever stops, the call goes back to both ears on its own.
-- **The voice is late:** a faster `--rate` or a faster speech model (`call-captions bench`).
+- **The voice is late:** a faster `--voice-speed` (2 or more), or `--voice Fred`, which starts
+  talking soonest.
 
 ## Uninstall
 
