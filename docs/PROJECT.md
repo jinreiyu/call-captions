@@ -9,8 +9,11 @@ Live English captions of a Japanese phone call, shown on a Mac while the other p
 talking. Speech recognition and translation run on the Mac itself. No audio or text leaves the
 machine, and nothing is added to the call, so the other person hears a normal call.
 
-Target hardware: Apple Silicon Macs (M1 or newer), macOS 14 or later. Measured on an M4 Mac mini:
-about 0.8 s to recognize a sentence and 0.2 s to translate it, after the speaker pauses.
+Target hardware: Apple Silicon Macs (M1 or newer), macOS 14 or later. With Kotoba-Whisper (the
+default until 1.4.0), an M4 Mac mini took about 0.8 s to recognize a sentence and 0.2 s to
+translate it, after the speaker paused. Parakeet, the default since 1.4.0, processes only the
+actual audio instead of a 30-second window, so it should be several times faster; `call-captions
+bench` measures it (see "Speed" below).
 
 ## How it works
 
@@ -24,7 +27,7 @@ iPhone call ──► taken on the Mac (Continuity "Calls from iPhone")
       your headset         BlackHole (loopback driver)
       (you hear it)              │
                                  ▼
-                    live_captions.py:  Silero VAD → Kotoba-Whisper (MLX) → LFM2-ENJP (MLX)
+                    live_captions.py:  Silero VAD → Parakeet-ja (MLX) → LFM2-ENJP (MLX)
                                  │
                                  ▼
                   terminal window: Japanese line + English line
@@ -54,9 +57,9 @@ captioned nor heard by the caller (as long as it's headphones: `--speak` refuses
 | Step | Model | Size | License |
 | --- | --- | --- | --- |
 | Find speech | [Silero VAD](https://github.com/snakers4/silero-vad) | 2 MB | MIT |
-| Japanese speech → text | [Kotoba-Whisper v2.0](https://huggingface.co/kotoba-tech/kotoba-whisper-v2.0), [MLX build](https://huggingface.co/kaiinui/kotoba-whisper-v2.0-mlx) | 0.76B | Apache-2.0 |
+| Japanese speech → text | [NVIDIA Parakeet TDT-CTC 0.6B ja](https://huggingface.co/nvidia/parakeet-tdt_ctc-0.6b-ja), [MLX build](https://huggingface.co/mlx-community/parakeet-tdt_ctc-0.6b-ja) | 0.6B | CC-BY-4.0 |
 | Japanese → English | [LiquidAI LFM2-350M-ENJP-MT](https://huggingface.co/LiquidAI/LFM2-350M-ENJP-MT) | 0.35B | LFM Open License |
-| Optional speech model | [NVIDIA Parakeet TDT-CTC 0.6B ja](https://huggingface.co/nvidia/parakeet-tdt_ctc-0.6b-ja) (`--asr parakeet`) | 0.6B | CC-BY-4.0 |
+| Optional speech model | [Kotoba-Whisper v2.0](https://huggingface.co/kotoba-tech/kotoba-whisper-v2.0), [MLX build](https://huggingface.co/kaiinui/kotoba-whisper-v2.0-mlx) (`--asr kotoba`, default until 1.4.0) | 0.76B | Apache-2.0 |
 | Optional speech model | [Qwen3-ASR 1.7B / 0.6B](https://huggingface.co/Qwen/Qwen3-ASR-1.7B), [8-bit MLX builds](https://huggingface.co/moona3k/mlx-qwen3-asr-1.7b-8bit) via [mlx-qwen3-asr](https://github.com/moona3k/mlx-qwen3-asr) (`--asr qwen3`, `qwen3-small`) | 1.7B / 0.6B | Apache-2.0 |
 | Spoken English (`--speak`) | The voices built into macOS (`say`) | none | part of macOS |
 | Optional translator | [PLaMo 2 Translate](https://huggingface.co/pfnet/plamo-2-translate) (`--mt plamo`) | 9.5B | PLaMo Community License |
@@ -82,7 +85,7 @@ Typical interview-style lines, translated by LFM2-ENJP (10 of 11 right in the te
 
 Known weak spots: each sentence is translated on its own, so it sometimes picks the wrong person
 where Japanese leaves the subject out; and names (people, companies) are often misspelled by the
-speech model. `--hint` nudges Kotoba-Whisper toward expected names.
+speech model. `--hint` nudges Kotoba-Whisper and Qwen3-ASR (not Parakeet) toward expected names.
 
 Rejected along the way:
 
@@ -126,10 +129,26 @@ Published Japanese benchmarks for the speech models (none measured phone audio o
 - [mlx-qwen3-asr](https://github.com/moona3k/mlx-qwen3-asr) on an M4 Pro: Qwen3-ASR 0.6B 8-bit
   0.10 s for a 2.5 s clip, 1.7B (16-bit) 0.36 s.
 
-In our own test, Parakeet misheard an English company name and stopped early on a long clip
-without pauses (the captioner cuts audio at pauses, which avoids the second problem). So the
-default stays Kotoba-Whisper until a model proves better on real calls; `bench` makes that check
-quick.
+Parakeet is the default since 1.4.0: it is the fastest, and in the published read-speech tests
+it is at least as accurate as Kotoba-Whisper. In our own test on a real voicemail, cut into
+sentences the way live captions are, it got every sentence but spelled the two English company
+names as it heard them (an acceptable cost for speed). It also showed one real flaw: when a
+second sentence follows a short pause (0.15 to 0.4 s) in the same piece of audio, Parakeet-ja
+stops after the first, with either of its decoders (TDT or CTC). It does hear the second sentence
+on its own. So the captioner checks where Parakeet's last word ended and, if speech-length audio
+is left, runs it again on the rest; with that, the voicemail came out complete. `bench` compares
+the models on your own recordings.
+
+The models are already the smallest that do the job well:
+
+- **LFM2-350M-ENJP-MT** is the smallest dedicated Japanese↔English translation model, and runs at
+  full precision. An 8-bit copy would save about 0.05 s per sentence but phrased a test greeting
+  worse.
+- **Parakeet** runs in 16-bit (bfloat16) on MLX; its 2.5 GB download is 32-bit.
+- **Qwen3-ASR** uses 8-bit builds. 4-bit is about 20 % faster but roughly doubled the Japanese
+  error rate in [one benchmark](https://soniqo.audio/benchmarks) (16.1 % vs 8.6 % on FLEURS).
+- **Kotoba-Whisper** is already distilled (two decoder layers instead of 32). Its cost is the
+  30-second window, which quantizing doesn't shrink.
 
 Other things considered for speed:
 
@@ -183,7 +202,7 @@ In [jinreiyu/homebrew-tap](https://github.com/jinreiyu/homebrew-tap):
 2. **post-install** (`post_install_steps` → `call-captions install-env`): creates Python 3.12
    with `uv`, installs the packages and downloads the models, all inside the formula's folder.
    On upgrade or reinstall it moves the models over from the previous version's folder instead
-   of downloading 2 GB again.
+   of downloading several GB again.
 
 Homebrew's rules shaped this design (checked in Homebrew's source):
 

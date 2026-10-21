@@ -91,9 +91,25 @@ class ParakeetASR:
         self._get_logmel = get_logmel
         self.model = from_pretrained(repo)
 
-    def __call__(self, audio, final=True):
+    def _once(self, audio):
         mel = self._get_logmel(self._mx.array(audio), self.model.preprocessor_config)
-        return self.model.generate(mel)[0].text.strip()
+        r = self.model.generate(mel)[0]
+        return r.text.strip(), (r.sentences[-1].end if r.sentences else 0.0)
+
+    def __call__(self, audio, final=True):
+        # Parakeet-ja often stops after one sentence when another follows a short pause (seen on
+        # real speech: "…幸いです。" then nothing for 「よろしくお願いします」). So whenever it
+        # stops with speech-length audio left over, carry on from where it stopped.
+        texts, start = [], 0
+        for _ in range(6):
+            text, end = self._once(audio[start:])
+            if not re.search(r"[\w぀-ヿ一-鿿]", text) or end <= 0:
+                break
+            texts.append(text)
+            start += int(end * SR)
+            if len(audio) - start < int(0.4 * SR):
+                break
+        return "".join(texts)
 
 
 class QwenASR:
@@ -454,7 +470,8 @@ class Voice:
         with self.cond:
             while not self.closed and self.pending is None and time.monotonic() < self.busy_until - 0.1:
                 self.cond.wait(max(0.01, self.busy_until - 0.1 - time.monotonic()))
-            if self.closed or self.pending is not None or len(pcm) == 0:
+            behind = time.monotonic() < self.busy_until - 0.1
+            if self.closed or len(pcm) == 0 or (behind and self.pending is not None):
                 return
         try:
             self.proc.stdin.write(struct.pack("<i", len(pcm)) + pcm.astype("<f4").tobytes())
@@ -795,10 +812,11 @@ def main():
     ap.add_argument("--list-devices", action="store_true", help="list input devices and exit")
     ap.add_argument("--file", help="caption an audio file instead of a live device (for testing)")
     ap.add_argument("--fast", action="store_true", help="with --file: process as fast as possible, not in real time")
-    ap.add_argument("--asr", default="kotoba", help="kotoba | parakeet | cpu[:model] | <hf repo> [kotoba]")
+    ap.add_argument("--asr", default="parakeet",
+                    help="parakeet | kotoba | qwen3 | qwen3-small | cpu[:model] | <hf repo> [parakeet]")
     ap.add_argument("--mt", default="lfm2", help="lfm2 | plamo | none | <mlx-lm hf repo> [lfm2]")
     ap.add_argument("--hint", default="",
-                    help="names to expect, e.g. '株式会社サンプル 山田' (Kotoba only; biases spelling)")
+                    help="names to expect, e.g. '株式会社サンプル 山田' (Kotoba and Qwen3 only; biases spelling)")
     ap.add_argument("--english-only", action="store_true", help="hide the Japanese lines")
     ap.add_argument("--no-timing", action="store_true", help="hide per-line timing")
     ap.add_argument("--no-partials", action="store_true", help="don't show text while the person is still talking")
@@ -823,8 +841,8 @@ def main():
     ap.add_argument("--prefetch", action="store_true", help="download and warm up the models, then exit")
     ap.add_argument("--download-only", action="store_true", help="download the models without loading them, then exit")
     ap.add_argument("--bench", metavar="AUDIO", help="compare the speech models on an audio file, then exit")
-    ap.add_argument("--models", default="kotoba,parakeet,qwen3",
-                    help="speech models for --bench [kotoba,parakeet,qwen3]")
+    ap.add_argument("--models", default="parakeet,qwen3,kotoba",
+                    help="speech models for --bench [parakeet,qwen3,kotoba]")
     args = ap.parse_args()
 
     if args.bench:
@@ -850,6 +868,8 @@ def main():
     screen = Screen(args.english_only, not args.no_timing, args.log)
     screen.info(f"Loading speech model ({ASR_MODELS.get(args.asr, args.asr)}) …")
     asr = make_asr(args.asr, args.hint)
+    if args.hint and isinstance(asr, ParakeetASR):
+        screen.info("  --hint has no effect on Parakeet; --asr qwen3 or --asr kotoba use it")
     t = time.monotonic()
     asr(np.zeros(SR, np.float32))
     screen.info(f"  ready, warm-up {time.monotonic() - t:.1f}s")

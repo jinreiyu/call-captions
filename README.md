@@ -11,8 +11,9 @@ call: the other person hears a normal call.
   … 前職ではどういったお仕事を                          ← still talking (updates every second)
 ```
 
-Measured on an M4 Mac mini: about 0.8 s to recognize a sentence and 0.2 s to translate it, after
-the speaker pauses.
+Speech recognition uses NVIDIA Parakeet (the fastest of the Japanese models compared), and translation uses
+LiquidAI LFM2-ENJP (the smallest Japanese-to-English model). `call-captions bench` times them on
+your Mac.
 
 ## Install
 
@@ -23,7 +24,7 @@ brew install jinreiyu/tap/call-captions
 ```
 
 That one command installs everything: the program, its own Python, the packages and the speech
-and translation models (about 2 GB). All of it goes into Homebrew's folder for Call Captions, so
+and translation models (about 3 GB). All of it goes into Homebrew's folder for Call Captions, so
 `brew uninstall` removes all of it again. Upgrades (`brew upgrade call-captions`) reuse the models.
 
 Then start it once:
@@ -126,19 +127,19 @@ Try it on a recording: `call-captions --file ~/Downloads/voicemail.m4a --speak`.
 call-captions bench ~/Downloads/voicemail.m4a
 ```
 
-It puts the same sentences of your recording through Kotoba-Whisper, Parakeet and Qwen3-ASR,
+It puts the same sentences of your recording through Parakeet, Qwen3-ASR and Kotoba-Whisper,
 translates each, and prints the time per sentence, so you can pick the fastest one that's still
-right. The first run downloads the two extra models (about 4.7 GB). Then use it with, for
-example, `--asr parakeet` (or add that line to `options.txt`).
+right. The first run downloads the models you don't have yet (Qwen3-ASR is about 2.2 GB). Switch
+with, for example, `--asr qwen3` (or add that line to `options.txt`).
 
 ## Options
 
 | Option | What it does |
 | --- | --- |
-| `--asr kotoba` | Default. Kotoba-Whisper v2.0, Japanese only. |
-| `--asr parakeet` | NVIDIA Parakeet TDT-CTC 0.6B Japanese. Fastest; adds punctuation. |
-| `--asr qwen3` | Qwen3-ASR 1.7B (8-bit). Most accurate on natural conversation in published tests. |
+| `--asr parakeet` | Default. NVIDIA Parakeet TDT-CTC 0.6B Japanese. Fastest; adds punctuation. Spells English names as it hears them. |
+| `--asr qwen3` | Qwen3-ASR 1.7B (8-bit). Most accurate on natural conversation in published tests; slower. |
 | `--asr qwen3-small` | Qwen3-ASR 0.6B (8-bit). Faster, less accurate. |
+| `--asr kotoba` | Kotoba-Whisper v2.0, the default before 1.4.0. |
 | `--mt lfm2` | Default. LiquidAI LFM2-350M-ENJP-MT. |
 | `--mt plamo` | PLaMo 2 Translate (Preferred Networks), 9.5B, 4-bit, about 5.5 GB. Slower. |
 | `--mt none` | Japanese captions only. |
@@ -160,11 +161,11 @@ example, `--asr parakeet` (or add that line to `options.txt`).
 | Step | Model | Size |
 | --- | --- | --- |
 | Find speech | [Silero VAD](https://github.com/snakers4/silero-vad) | 2 MB |
-| Japanese speech → text | [Kotoba-Whisper v2.0](https://huggingface.co/kotoba-tech/kotoba-whisper-v2.0) (MLX) | 0.76B |
+| Japanese speech → text | [NVIDIA Parakeet TDT-CTC 0.6B ja](https://huggingface.co/nvidia/parakeet-tdt_ctc-0.6b-ja) (MLX) | 0.6B |
 | Japanese → English | [LFM2-350M-ENJP-MT](https://huggingface.co/LiquidAI/LFM2-350M-ENJP-MT) (MLX) | 0.35B |
 
-Both models do one job only: Kotoba-Whisper is distilled for Japanese, and LFM2-ENJP translates
-only between Japanese and English. Each sentence is translated on its own, so now and then it
+Both models do one job only: Parakeet recognizes only Japanese, and LFM2-ENJP translates only
+between Japanese and English. Each sentence is translated on its own, so now and then it
 guesses the wrong person ("I" vs "you") where Japanese leaves it out. Names are the weakest spot
 for recognition.
 
@@ -181,7 +182,7 @@ The models are downloaded from Hugging Face during setup and are covered by thei
   BlackHole. `call-captions` warns about this.
 - **Volume booster apps:** apps that boost one app's volume (for example per-app mixers) can
   mute that app's audio when the output is a multi-output device. Leave the calling app at 100%.
-- **"falling behind real time":** add `--no-partials`, or try `--asr parakeet`.
+- **"falling behind real time":** add `--no-partials`.
 - **No voice with `--speak`:** check that you hear the call in your right ear; if the voice stops,
   the call goes back to both ears on its own. `say "test"` in a terminal checks the Mac's voice.
 - **The voice is late:** a faster `--rate`, a compact voice (`--voice Samantha`) or a faster
@@ -203,7 +204,7 @@ device (so you can reinstall or roll back without setting up again).
 
 ## Versions and rollback
 
-The latest version is 1.3.0, which adds `--speak`, `--early` and Qwen3-ASR. Version 1.2.0 is a
+The latest version is 1.4.0: Parakeet by default, plus `--speak`, `--early` and Qwen3-ASR (1.3.0). Version 1.2.0 is a
 milestone: confirmed working and kept installable. To stay on your current version,
 `brew pin call-captions`. If an update ever breaks something:
 

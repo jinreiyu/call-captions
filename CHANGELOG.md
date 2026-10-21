@@ -3,6 +3,19 @@
 Milestones are versions confirmed working on a real Mac. Each is kept installable for rollback
 as `brew install jinreiyu/tap/call-captions-X.Y.Z` and on the `milestone/vX.Y.Z` branch.
 
+## 1.4.0
+
+Not a milestone yet: roll back with `call-captions-1.2.0` if anything is wrong.
+
+- Parakeet (NVIDIA, Japanese) is now the default speech model: the fastest, and at least as
+  accurate as Kotoba-Whisper in published read-speech tests. `--asr kotoba` brings back the old
+  default. Upgrading downloads Parakeet once (about 2.5 GB).
+- Parakeet sometimes stopped after the first of two sentences separated by a short pause; it now
+  picks up where it stopped, so no sentence is lost.
+- `--hint` says when it has no effect (Parakeet doesn't use it).
+- `--speak` no longer skips a line that was still being turned into speech when the next one
+  arrived; it skips only when the voice is actually behind.
+
 ## 1.3.0
 
 Not a milestone yet: roll back with `call-captions-1.2.0` if anything is wrong.

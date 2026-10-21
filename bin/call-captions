@@ -8,7 +8,7 @@
 # removed without asking.
 set -euo pipefail
 
-VERSION="1.3.0"
+VERSION="1.4.0"
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 settings="${CALL_CAPTIONS_HOME:-$HOME/call-captions}"
 py="$here/venv/bin/python"
@@ -66,7 +66,7 @@ install_env() {
   export UV_NO_CONFIG=1 UV_PYTHON_INSTALL_DIR="$here/python"
   export UV_CACHE_DIR="${HOMEBREW_CACHE:-$here}/call-captions-uv-cache"
 
-  # Upgrades and reinstalls get a new folder; bring the 2 GB of models along instead of
+  # Upgrades and reinstalls get a new folder; bring the models (several GB) along instead of
   # downloading them again. (The old folder is deleted by Homebrew afterwards.)
   if [[ ! -d "$here/hf/hub" ]]; then
     local old
@@ -83,7 +83,7 @@ install_env() {
   [[ -x "$py" ]] || uv venv --quiet --python 3.12 --python-preference only-managed "$here/venv"
   echo "==> Python packages"
   uv pip install --quiet --python "$py" -r "$here/requirements.txt"
-  echo "==> Speech and translation models (about 2 GB the first time)"
+  echo "==> Speech and translation models (about 3 GB the first time)"
   "$py" "$here/live_captions.py" --download-only
 }
 
@@ -130,7 +130,7 @@ ensure_settings() {
     else
       echo "# --device \"BlackHole 2ch\""
     fi
-    echo "# --hint \"株式会社サンプル 山田\""
+    echo "# --asr qwen3 --hint \"株式会社サンプル 山田\""
     echo "# --english-only"
     echo "# --speak"
   } >"$settings/options.txt"
