@@ -327,6 +327,10 @@ def read_wav(path):
     return x[: len(x) // channels * channels].reshape(-1, channels).mean(axis=1), rate
 
 
+class VoiceOff(Exception):
+    """The voice can't run; captions carry on without it."""
+
+
 class Voice:
     """Says each English line in your left ear with the Mac's built-in speech (`say`).
 
@@ -346,7 +350,7 @@ class Voice:
         hear = os.environ.get("CALL_CAPTIONS_HEAR", "")
         blackhole = os.environ.get("CALL_CAPTIONS_BLACKHOLE", "")
         if not (shutil.which("say") and os.access(self.audio, os.X_OK) and hear and (blackhole or mode == "mix")):
-            sys.exit("--speak works on a Mac, started with the call-captions command after its sound setup.")
+            raise VoiceOff("it works on a Mac, started with the call-captions command after its sound setup")
         self.hear_name = self._check_headphones(hear)
         self.previous = self._audio("default-output").strip()
         command = [self.audio, "monitor", hear] + ([blackhole] if mode == "split" else [])
@@ -358,7 +362,7 @@ class Voice:
         ready = self.proc.stdout.readline().split() if started else []
         if len(ready) != 2 or ready[0] != b"ready":
             self.proc.kill()
-            sys.exit("Couldn't start the voice (call-captions-audio monitor).")
+            raise VoiceOff("couldn't start playing to your headset (call-captions-audio monitor)")
         self.rate = int(ready[1])
         self.switched = False
         if mode == "split":
@@ -387,12 +391,12 @@ class Voice:
                 continue
             low = name.lower()
             if "speaker" in low or kind in ("display", "airplay") or (kind == "builtin" and "headphone" not in low):
-                sys.exit(
-                    f"--speak needs headphones: {name} would play the English out loud, where your\n"
-                    "microphone could pass it into the call. Choose your headset with: call-captions audio"
+                raise VoiceOff(
+                    f"{name} would play the English out loud, where your microphone could pass it into the "
+                    "call. Choose headphones with: call-captions audio"
                 )
             return name
-        sys.exit("The device you hear calls on isn't connected. Choose it with: call-captions audio")
+        raise VoiceOff("the device you hear calls on isn't connected. Choose it with: call-captions audio")
 
     def prepare(self, text):
         """Make the audio for a line that is probably about to be said."""
@@ -823,12 +827,14 @@ def main():
     ap.add_argument("--partial-every", type=float, default=1.0, help="seconds between in-progress updates [1.0]")
     ap.add_argument("--draft-after", type=float, default=4.0,
                     help="translate in-progress text once an utterance is this long; 0 disables [4.0]")
-    ap.add_argument("--speak", nargs="?", const="split", choices=["split", "mix"],
-                    help="say the English in your left ear (headphones only); split: the call only in your "
-                         "right ear (default), mix: the call stays in both ears")
-    ap.add_argument("--voice", default="Samantha",
-                    help="Mac voice for --speak; list them with: say -v '?' [Samantha]")
-    ap.add_argument("--rate", type=int, default=220, help="speaking speed for --speak, words per minute [220]")
+    ap.add_argument("--speak", nargs="?", const="split", default="split", choices=["split", "mix"],
+                    help="say the English in your left ear (on by default; headphones only). split: the call "
+                         "only in your right ear [default], mix: the call stays in both ears")
+    ap.add_argument("--no-speak", dest="speak", action="store_const", const=None, help="captions only, no voice")
+    ap.add_argument("--voice", default="Fred",
+                    help="Mac voice; list them with: say -v '?'. Fred is the classic robot voice [Fred]")
+    ap.add_argument("--rate", type=int, default=240, help="speaking speed, words per minute [240]")
+    ap.add_argument("--test-voice", action="store_true", help="say a test line in your left ear, then exit")
     ap.add_argument("--voice-volume", type=float, default=1.0, help="loudness of the voice, 0 to 2 [1.0]")
     ap.add_argument("--end-silence", type=float, default=0.5, help="pause (s) that ends an utterance [0.5]")
     ap.add_argument("--early", type=float, default=0.25,
@@ -847,6 +853,31 @@ def main():
 
     if args.bench:
         bench(args)
+        return
+
+    if args.test_voice:
+        screen = Screen(False, False, None)
+        try:
+            voice = Voice(args.speak or "split", args.voice, args.rate, args.voice_volume, screen)
+        except VoiceOff as e:
+            sys.exit(f"Voice off: {e}")
+        import subprocess
+
+        try:
+            print(f"Left ear ({voice.hear_name}): the English voice …", flush=True)
+            voice.say("Left ear. This is where the English goes.")
+            voice.drain()
+            if voice.switched:  # the Mac's output is BlackHole now: this plays the way a call would
+                time.sleep(0.3)
+                print("Right ear: where the call plays …", flush=True)
+                subprocess.run(["say", "-r", str(args.rate), "Right ear. This is where the call goes."],
+                               stdin=subprocess.DEVNULL, timeout=30)
+                time.sleep(0.5)
+        except KeyboardInterrupt:
+            pass
+        finally:
+            voice.close()  # puts the Mac's sound output back
+        print("Heard both? Then it works. If the right ear was silent, use --speak mix (the call in both ears).")
         return
 
     if args.list_devices:
@@ -887,9 +918,13 @@ def main():
 
     voice = None
     if args.speak:
-        voice = Voice(args.speak, args.voice, args.rate, args.voice_volume, screen)
-        call = "the call in your right ear" if args.speak == "split" else "the call in both ears"
-        screen.info(f"Voice: English in your left ear, {call} ({voice.hear_name}).")
+        try:
+            voice = Voice(args.speak, args.voice, args.rate, args.voice_volume, screen)
+            call = "the call in your right ear" if args.speak == "split" else "the call in both ears"
+            screen.info(f"{RESET}{BOLD}Voice on{RESET}{DIM}: English in your left ear, {call} ({voice.hear_name}). "
+                        f"--no-speak turns it off.")
+        except VoiceOff as e:
+            screen.info(f"{RESET}{YELLOW}! Voice off: {e}{RESET}")
 
     captioner = Captioner(args, asr, mt, screen, voice)
     q = queue.Queue()

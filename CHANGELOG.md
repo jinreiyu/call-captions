@@ -3,6 +3,18 @@
 Milestones are versions confirmed working on a real Mac. Each is kept installable for rollback
 as `brew install jinreiyu/tap/call-captions-X.Y.Z` and on the `milestone/vX.Y.Z` branch.
 
+## 1.5.0
+
+Not a milestone yet: roll back with `call-captions-1.2.0` if anything is wrong.
+
+- The voice is on by default: the English in your left ear, the call in your right. `--no-speak`
+  turns it off.
+- The default voice is Fred, the classic robot voice, at 240 words per minute.
+- The voice never stops the captions: if it can't run (for example on speakers), the window says
+  `! Voice off:` and why, and captions carry on.
+- `call-captions test-voice` plays a line in each ear to check the routing before a call.
+- The captions window starts with the version number.
+
 ## 1.4.0
 
 Not a milestone yet: roll back with `call-captions-1.2.0` if anything is wrong.

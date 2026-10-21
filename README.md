@@ -100,26 +100,32 @@ From a terminal it's the same: `call-captions --hint "株式会社サンプル �
 
 ## Hear the English in your left ear
 
+On by default since 1.5.0: a robot voice says each English line in your **left ear**, while the
+call plays only in your **right ear**. It's the speech built into macOS (free, no download, almost
+no CPU). The English goes only to your headset, never into the call. **Headphones only**: on the
+Mac's speakers it turns itself off, since your microphone could pass it to the caller.
+
+Check it once before a call:
+
 ```bash
-call-captions --speak
+call-captions test-voice
 ```
 
-The Mac's built-in voice says each English line in your **left ear**, while the call plays only in
-your **right ear**. It uses the speech built into macOS (free, no download, almost no CPU). The
-English goes only to your headset, never into the call. **Headphones only**: it refuses to speak
-through the Mac's speakers, where your microphone could pass it to the caller.
+You should hear "Left ear…" on the left and "Right ear…" on the right (the right one plays the
+way a call does).
 
-- `--speak mix` keeps the call in both ears and adds the English on the left.
-- `--voice Samantha` (default) is quick and clear. Any voice from `say -v '?'` works, including
-  the classic robotic ones (`--voice Fred`). Compact voices start fastest.
-- `--rate 220` is the speed in words per minute; faster keeps up better.
+- `--no-speak`: captions only. `--speak mix`: the call stays in both ears, the English is added
+  on the left.
+- `--voice Fred` (default) is the classic robot voice, the quickest to make. Any voice from
+  `say -v '?'` works, for example `--voice Samantha` for a clearer one.
+- `--rate 240` is the speed in words per minute; faster keeps up better.
 - If they keep talking, the voice skips a line rather than falling behind (the line stays on
   screen), so it always speaks the newest sentence.
-- To always use it from the app, add `--speak` to `~/call-captions/options.txt`.
 - Set the volume on your headset: while the call is in your right ear only, the Mac's volume
   keys change BlackHole's level instead.
+- The window says `Voice on` when it starts, or `! Voice off:` and why.
 
-Try it on a recording: `call-captions --file ~/Downloads/voicemail.m4a --speak`.
+Try it on a recording: `call-captions --file ~/Downloads/voicemail.m4a`.
 
 ### Which speech model is fastest on your Mac
 
@@ -144,8 +150,9 @@ with, for example, `--asr qwen3` (or add that line to `options.txt`).
 | `--mt plamo` | PLaMo 2 Translate (Preferred Networks), 9.5B, 4-bit, about 5.5 GB. Slower. |
 | `--mt none` | Japanese captions only. |
 | `--hint "..."` | Names you expect; nudges Kotoba-Whisper and Qwen3-ASR toward those spellings. |
-| `--speak` | Say the English in your left ear; the call in your right. `--speak mix`: call in both. |
-| `--voice NAME` / `--rate 220` | Voice and speed (words per minute) for `--speak`. |
+| `--no-speak` | Captions only. By default the English is said in your left ear, the call in your right. |
+| `--speak mix` | Keep the call in both ears; the English is added on the left. |
+| `--voice NAME` / `--rate 240` | Voice (default Fred, the robot voice) and speed in words per minute. |
 | `--english-only` | Hide the Japanese lines. |
 | `--no-partials` | Only show finished sentences. |
 | `--end-silence 0.4` | Pause (seconds) that ends a sentence. Default 0.5. Shorter is sooner but can cut sentences in two. |
@@ -183,10 +190,12 @@ The models are downloaded from Hugging Face during setup and are covered by thei
 - **Volume booster apps:** apps that boost one app's volume (for example per-app mixers) can
   mute that app's audio when the output is a multi-output device. Leave the calling app at 100%.
 - **"falling behind real time":** add `--no-partials`.
-- **No voice with `--speak`:** check that you hear the call in your right ear; if the voice stops,
-  the call goes back to both ears on its own. `say "test"` in a terminal checks the Mac's voice.
-- **The voice is late:** a faster `--rate`, a compact voice (`--voice Samantha`) or a faster
-  speech model (`call-captions bench`).
+- **No voice:** run `call-captions version` (it should be 1.5.0 or later), then
+  `call-captions test-voice`. The captions window prints `! Voice off:` and the reason when the
+  voice can't run (for example when the sound plays on speakers).
+- **Can't hear the call in your right ear:** stop with Ctrl+C and use `--speak mix`. If the voice
+  ever stops, the call goes back to both ears on its own.
+- **The voice is late:** a faster `--rate` or a faster speech model (`call-captions bench`).
 
 ## Uninstall
 
@@ -204,7 +213,8 @@ device (so you can reinstall or roll back without setting up again).
 
 ## Versions and rollback
 
-The latest version is 1.4.0: Parakeet by default, plus `--speak`, `--early` and Qwen3-ASR (1.3.0). Version 1.2.0 is a
+The latest version is 1.5.0: the voice is on by default, Parakeet recognizes the speech (1.4.0),
+and lines start early at a pause (1.3.0). Version 1.2.0 is a
 milestone: confirmed working and kept installable. To stay on your current version,
 `brew pin call-captions`. If an update ever breaks something:
 

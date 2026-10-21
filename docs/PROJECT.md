@@ -36,7 +36,8 @@ iPhone call ──► taken on the Mac (Continuity "Calls from iPhone")
 Your own voice goes from your headset mic straight into the call and never reaches BlackHole,
 so only the other person is captioned.
 
-With `--speak` (1.3.0) the routing changes while captions run:
+With the voice on (the default since 1.5.0; `--no-speak` turns it off) the routing changes while
+captions run:
 
 ```
 call ──► Mac sound output = BlackHole ──► live_captions.py ──► English text
@@ -50,7 +51,8 @@ call ──► Mac sound output = BlackHole ──► live_captions.py ──►
 ```
 
 The English goes only to the headset, never into BlackHole or the call, so it is neither
-captioned nor heard by the caller (as long as it's headphones: `--speak` refuses speakers).
+captioned nor heard by the caller (as long as it's headphones: on speakers the voice turns itself
+off).
 
 ### The models
 
@@ -107,7 +109,8 @@ After the other person stops talking, a line appears after:
    sentence, so it costs about the same every time (about 0.8 s on an M4 Mac mini). Parakeet and
    Qwen3-ASR process only the actual audio.
 3. **Translation**: about 0.1 to 0.3 s with LFM2-ENJP (0.35B).
-4. **Voice** (`--speak`): making the audio with `say` takes about 0.1 to 0.2 s.
+4. **Voice**: making the audio with `say` takes about 0.1 to 0.2 s; Fred, the default robot
+   voice, is a simple formant voice and the quickest to make.
 
 Since 1.3.0, steps 2 to 4 start at a 0.25 s pause (`--early`) instead of waiting for the full
 0.5 s. If the pause turns out to end the sentence, the result is used as is: the audio is the
@@ -162,7 +165,7 @@ Other things considered for speed:
 - **Direct speech-to-speech translation** (for example Meta SeamlessStreaming): one model, but
   lower translation quality than the two dedicated models here.
 
-### The voice (`--speak`)
+### The voice (on by default; `--no-speak` turns it off)
 
 - `say -o` makes a WAV at the headset's sample rate for each English line; the captioner sends
   the samples to `call-captions-audio monitor` over a pipe.
@@ -177,8 +180,12 @@ Other things considered for speed:
 - While a line plays, the next line waits. If an even newer one comes in, the waiting one is
   skipped, so the voice never falls more than a line behind. The translation made at the early
   pause is turned into speech right away, so it is often ready before the line is final.
-- `--speak` refuses built-in speakers, displays and AirPlay. Through speakers, the microphone
-  could pass the English into the call.
+- The voice turns itself off on built-in speakers, displays and AirPlay. Through speakers, the
+  microphone could pass the English into the call. Whenever the voice can't run, the window says
+  `! Voice off:` with the reason and the captions carry on.
+- `call-captions test-voice` says a line in the left ear through the monitor, then, with the
+  Mac's output on BlackHole, a line through the default output, which reaches the right ear the
+  way a call does. That checks both halves of the routing before a real call.
 
 ### Program layout
 
