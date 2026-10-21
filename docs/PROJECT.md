@@ -1,7 +1,8 @@
 # Call Captions: project notes
 
 Everything about how Call Captions works, why it is built this way, how it was tested, and how
-to release and roll back versions. For installing and using it, see the [README](../README.md).
+to release and roll back versions. For installing and using it, see the [README](../README.md);
+for which chip does which job, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## What it is
 

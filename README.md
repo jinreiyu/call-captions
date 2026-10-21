@@ -307,7 +307,8 @@ Back to the latest later: `brew uninstall call-captions-1.10.0 && brew install
 jinreiyu/tap/call-captions`. Milestone 1 is `call-captions-1.2.0` the same way.
 
 Your settings and sound routing are kept. See [CHANGELOG.md](CHANGELOG.md) for versions and
-[docs/PROJECT.md](docs/PROJECT.md) for how everything works.
+[docs/PROJECT.md](docs/PROJECT.md) for how everything works. [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+shows which chip does which job and how it stays fast.
 
 ## License
 
