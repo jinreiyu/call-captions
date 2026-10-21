@@ -190,6 +190,7 @@ class ParakeetANE:
         with open(os.path.join(path, "vocab.json"), encoding="utf-8") as f:
             self.vocab = json.load(f)
         self.blank = len(self.vocab)
+        self.held = deque(maxlen=64)  # see _predict
         self.tdt = None
         try:
             import mlx.core as mx
@@ -200,12 +201,24 @@ class ParakeetANE:
         except Exception:
             pass
 
+    def _predict(self, model, inputs):
+        # coremltools 9.0 lends each input array to Core ML, which can let go of it later on one of
+        # its own threads. That release drops the array's reference count without holding Python's
+        # lock and, if it was the last reference, frees the array right there: the segmentation
+        # fault seen on a real Mac, in a Core ML thread while Python sat idle. (Fixed upstream in
+        # coremltools commit a207b1a, "Fix NumPy owner release from Core ML queues", in no release
+        # yet.) Holding on to the last 64 calls' inputs (around 60 MB) means that late release never
+        # frees anything; by the time this drops them, Core ML has long let go.
+        out = model.predict(inputs)
+        self.held.append(inputs)
+        return out
+
     def _once(self, audio):
         n = min(len(audio), self.WINDOW)
         x = np.zeros((1, self.WINDOW), np.float32)
         x[0, :n] = audio[:n]
-        mel = self.prep.predict({"audio_signal": x, "audio_length": np.array([n], np.int32)})
-        enc = self.encoder.predict({"mel_features": mel["mel_features"], "mel_length": mel["mel_length"]})
+        mel = self._predict(self.prep, {"audio_signal": x, "audio_length": np.array([n], np.int32)})
+        enc = self._predict(self.encoder, {"mel_features": mel["mel_features"], "mel_length": mel["mel_length"]})
         features = np.asarray(enc["encoder"], np.float32)  # [1, 1024, steps of 80 ms]
         steps = int(np.asarray(enc["encoder_length"]).reshape(-1)[0]) or features.shape[2]
         if self.tdt is not None:
@@ -214,7 +227,7 @@ class ParakeetANE:
             words = [t for t in tokens if not is_punct(t.text)]
             text = "".join(t.text for t in tokens).replace("\u2581", " ").strip()
             return text, (words[-1].end if words else 0.0)
-        logits = np.asarray(self.ctc.predict({"encoder_output": enc["encoder"]})["ctc_logits"])[0]
+        logits = np.asarray(self._predict(self.ctc, {"encoder_output": enc["encoder"]})["ctc_logits"])[0]
         return ctc_greedy(logits[:steps], self.vocab, self.blank, 15.0 / logits.shape[0])
 
     def __call__(self, audio, final=True):

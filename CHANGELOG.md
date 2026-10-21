@@ -3,6 +3,17 @@
 Milestones are versions confirmed working on a real Mac. Each is kept installable for rollback
 as `brew install jinreiyu/tap/call-captions-X.Y.Z` and on the `milestone/vX.Y.Z` branch.
 
+## 1.7.1
+
+Not a milestone yet: roll back with `call-captions-1.2.0` if anything is wrong.
+
+- Works around the bug behind every `--turbo` crash so far, found in coremltools' own source:
+  coremltools 9.0 lets Core ML release our input arrays on one of Core ML's threads without
+  Python's lock, which can free them there and crash the process later, even while idle. Fixed
+  upstream on 2026-09-30 (commit a207b1a) but in no coremltools release yet. The Neural Engine
+  helper now keeps each input alive for its next 64 calls, so that late release never frees
+  anything. If it still stops, the captions keep switching to the GPU as in 1.7.0.
+
 ## 1.7.0
 
 Not a milestone yet: roll back with `call-captions-1.2.0` if anything is wrong.

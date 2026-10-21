@@ -230,6 +230,14 @@ The Mac has three separate engines: CPU, GPU and Neural Engine. `--turbo`:
   running. Since 1.7 Core ML runs only in a helper process that exchanges audio and text over a
   pipe; the captioner never imports coremltools, keeps Parakeet on the GPU loaded as a backup and
   switches to it on the spot if the helper stops (its crash report goes to a log file).
+- **The cause (1.7.1):** with Core ML alone in the helper, the 1.7.0 helper still crashed while
+  idle, waiting for audio. coremltools' native bridge wraps each numpy input in a `MLMultiArray`
+  that holds a reference to it; Core ML can release that wrapper on one of its private queues, and
+  in coremltools 9.0 the release decrements the numpy array's reference count without the GIL,
+  freeing it off-thread when it was the last reference. Upstream fixed it on 2026-09-30
+  (a207b1a, "Fix NumPy owner release from Core ML queues"), not in a release yet. Workaround: the
+  helper keeps every input dict for its next 64 predictions, so the late release never drops the
+  last reference.
 - **The Neural Engine model:** a fixed 15 s window (shorter audio is padded). Its vocabulary is
   identical to the MLX build's. If it can't load, the captioner falls back to the GPU Parakeet.
 - **Parakeet stopping after one sentence**, now handled for both decoders: on a real voicemail,
