@@ -8,7 +8,7 @@
 # removed without asking.
 set -euo pipefail
 
-VERSION="1.1.0"
+VERSION="1.2.0"
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 settings="${CALL_CAPTIONS_HOME:-$HOME/call-captions}"
 py="$here/venv/bin/python"
@@ -16,6 +16,8 @@ py="$here/venv/bin/python"
 brew_prefix="${HOMEBREW_PREFIX:-$(cd "$here/../../../.." 2>/dev/null && pwd)}"
 [[ -x "$brew_prefix/bin/brew" ]] || brew_prefix=/opt/homebrew
 bundle_id="local.callcaptions.launcher"
+audio="$here/bin/call-captions-audio" # sets up and switches the sound routing (src/audio.c)
+multi_uid="local.callcaptions.multioutput"
 export PATH="$brew_prefix/bin:$PATH"
 export HF_HOME="$here/hf" HF_HUB_DISABLE_TELEMETRY=1
 
@@ -26,6 +28,7 @@ call-captions $VERSION: live Japanese -> English captions for calls, on your Mac
   call-captions                  caption what plays into BlackHole (the call)
   call-captions --file AUDIO     caption an audio file instead, to test
   call-captions setup            check everything and fix what's missing
+  call-captions audio            choose where you hear the call (headset or speakers)
   call-captions app              rebuild "Call Captions.app" in Applications
   call-captions uninstall        remove everything (BlackHole is left alone)
   call-captions help             this text plus every caption option
@@ -163,6 +166,109 @@ ensure_blackhole() {
   fi
 }
 
+# ---- sound routing ---------------------------------------------------------------------------
+# "Call Captions Output" is a multi-output device: the call plays to the device you listen on
+# and, at the same time, into BlackHole, which the captioner reads. The Mac's sound output is
+# switched to it only while captions run, so your volume keys work the rest of the time.
+
+option_device() { # the --device value in options.txt, if any
+  [[ -f "$settings/options.txt" ]] || return 0
+  { grep -v '^[[:space:]]*#' "$settings/options.txt" || true; } | sed -n 's/.*--device[= ]"\([^"]*\)".*/\1/p' | head -n 1
+}
+
+blackhole_uid() { # the BlackHole named by --device, else the first BlackHole
+  "$audio" outputs | awk -F'\t' -v want="$(option_device)" '
+    $3 ~ /^BlackHole/ { if ($3 == want) { print $1; found = 1; exit } if (first == "") first = $1 }
+    END { if (!found && first != "") print first }'
+}
+
+saved_hear_on() {
+  [[ -f "$settings/audio.conf" ]] || return 0
+  sed -n 's/^HEAR_ON=//p' "$settings/audio.conf" | head -n 1
+}
+
+output_connected() { "$audio" outputs | cut -f1 | grep -qxF "$1"; }
+
+choose_hear_on() {
+  local current uid kind name i pick default=1
+  local uids=() names=()
+  current="$("$audio" default-output 2>/dev/null || true)"
+  while IFS=$'\t' read -r uid kind name; do
+    [[ "$kind" == virtual || "$kind" == aggregate || "$name" == BlackHole* ]] && continue
+    uids+=("$uid")
+    names+=("$name")
+  done < <("$audio" outputs)
+  if ((${#uids[@]} == 0)); then
+    echo "No speakers or headphones found to play the call on." >&2
+    return 1
+  fi
+  for i in "${!uids[@]}"; do
+    [[ "${uids[$i]}" == "$current" ]] && default=$((i + 1))
+  done
+  pick="$default"
+  if interactive; then
+    echo "Where do you want to hear calls? (a USB headset is the most reliable)"
+    for i in "${!uids[@]}"; do
+      printf '  %d) %s%s\n' $((i + 1)) "${names[$i]}" "$([[ "${uids[$i]}" == "$current" ]] && echo "  (current)")"
+    done
+    read -r -p "Number [$default]: " pick || true
+    [[ "$pick" =~ ^[0-9]+$ ]] && ((pick >= 1 && pick <= ${#uids[@]})) || pick="$default"
+  fi
+  mkdir -p "$settings"
+  printf 'HEAR_ON=%s\nHEAR_ON_NAME=%s\n' "${uids[$((pick - 1))]}" "${names[$((pick - 1))]}" >"$settings/audio.conf"
+}
+
+prepare_audio() {
+  if [[ ! -x "$audio" ]]; then
+    echo "Set up the sound routing by hand: see https://github.com/jinreiyu/call-captions#route-the-call-into-the-mac"
+    return 0
+  fi
+  local blackhole hear name result input
+  blackhole="$(blackhole_uid)"
+  [[ -n "$blackhole" ]] || return 0 # ensure_blackhole has already explained
+  hear="$(saved_hear_on)"
+  if [[ "${1:-}" == --choose || -z "$hear" ]] || ! output_connected "$hear"; then
+    if [[ -n "$hear" && "${1:-}" != --choose ]]; then
+      echo "The device you hear calls on ($(sed -n 's/^HEAR_ON_NAME=//p' "$settings/audio.conf")) isn't connected."
+    fi
+    choose_hear_on || return 0
+    hear="$(saved_hear_on)"
+  fi
+  name="$(sed -n 's/^HEAR_ON_NAME=//p' "$settings/audio.conf")"
+  if result="$("$audio" ensure-multi "$hear" "$blackhole")" && [[ "$result" == created ]]; then
+    echo "==> Sound routing ready: \"Call Captions Output\" plays calls to $name and into BlackHole."
+  fi
+  input="$("$audio" default-input 2>/dev/null || true)"
+  if [[ "$input" == BlackHole* ]]; then
+    echo "Note: your Mac's sound input is BlackHole, so callers won't hear you."
+    echo "      System Settings → Sound → Input: choose your headset mic."
+  fi
+}
+
+restore_to=""
+restore_output() {
+  if [[ -n "$restore_to" ]]; then "$audio" set-output "$restore_to" >/dev/null 2>&1 || true; fi
+}
+
+run_captions() {
+  local arg live=1
+  for arg in "$@"; do
+    case "$arg" in --file | --list-devices | --prefetch | --download-only) live=0 ;; esac
+  done
+  if ((live)) && [[ -x "$audio" ]] && output_connected "$multi_uid"; then
+    restore_to="$("$audio" default-output 2>/dev/null || true)"
+    [[ "$restore_to" == "$multi_uid" ]] && restore_to="$(saved_hear_on)"
+    if "$audio" set-output "$multi_uid"; then
+      echo "Sound output is \"Call Captions Output\" while captions run; it switches back when you stop."
+      trap restore_output EXIT
+      trap 'exit 130' INT TERM HUP
+    else
+      restore_to=""
+    fi
+  fi
+  "$py" "$here/live_captions.py" "$@"
+}
+
 require_env() {
   [[ -x "$py" ]] && return 0
   echo "The Python environment is missing. Rebuild it with:" >&2
@@ -176,6 +282,7 @@ first_run() {
   build_app
   tidy_old_install
   ensure_blackhole
+  prepare_audio
 }
 
 setup() {
@@ -184,11 +291,13 @@ setup() {
   echo
   echo "Ready. Double-click \"Call Captions\" in Applications, or run: call-captions"
   echo "Settings: $settings/options.txt"
+  echo "To caption iPhone calls, take them on this Mac: iPhone Settings → Apps → Phone → Calls on"
+  echo "Other Devices → this Mac, and on the Mac: FaceTime → Settings → Calls from iPhone."
 }
 
 uninstall() {
-  echo "This removes the Call Captions app, your settings ($settings) and, through"
-  echo "Homebrew, the program with its Python and models. BlackHole is left alone."
+  echo "This removes the Call Captions app, its sound routing, your settings ($settings) and,"
+  echo "through Homebrew, the program with its Python and models. BlackHole is left alone."
   ask "Continue?" N || { echo "Cancelled."; exit 0; }
   local app
   for app in "$(cat "$settings/.app-path" 2>/dev/null || true)" "/Applications/Call Captions.app" \
@@ -200,6 +309,7 @@ uninstall() {
     fi
   done
   tccutil reset AppleEvents "$bundle_id" &>/dev/null || true
+  if [[ -x "$audio" ]] && "$audio" remove-multi; then echo "Removed \"Call Captions Output\""; fi
   if [[ -d "$settings" && "$settings" != "/" && "$settings" != "$HOME" ]]; then
     rm -rf "$settings" && echo "Removed $settings"
   fi
@@ -210,7 +320,7 @@ uninstall() {
   fi
   cat <<'EOF'
 
-Done. Left alone on purpose: BlackHole and the Multi-Output Device in Audio MIDI Setup.
+Done. Left alone on purpose: BlackHole, and any audio devices you made yourself in Audio MIDI Setup.
 EOF
 }
 
@@ -218,6 +328,7 @@ case "${1:-}" in
   install-env) install_env ;;
   setup) setup ;;
   app) require_env; build_app --force ;;
+  audio) require_env; prepare_audio --choose ;;
   uninstall) uninstall ;;
   version | --version) echo "call-captions $VERSION" ;;
   help | -h | --help)
@@ -226,6 +337,6 @@ case "${1:-}" in
     ;;
   *)
     first_run
-    exec "$py" "$here/live_captions.py" "$@"
+    run_captions "$@"
     ;;
 esac

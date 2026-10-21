@@ -39,6 +39,10 @@ The first run adds **Call Captions** to your Applications folder and creates you
   [BlackHole](https://github.com/ExistentialAudio/BlackHole) loopback driver. If you already have
   any BlackHole (2ch, 16ch or 64ch) it uses yours and sets it in your settings. Only if you have
   none does it **ask** whether to install BlackHole 2ch. It never installs a second one.
+- **Sound routing:** it asks where you want to hear calls (your headset is suggested) and creates
+  **Call Captions Output**, a multi-output device that plays the call to that headset and into
+  BlackHole at the same time. You don't need to touch Audio MIDI Setup. Change the headset later
+  with `call-captions audio`.
 - **Older installs:** if an earlier version left Python and models in `~/call-captions`, it asks
   whether to delete them, keeping your `options.txt`.
 
@@ -46,26 +50,32 @@ The first run adds **Call Captions** to your Applications folder and creates you
 
 ## Route the call into the Mac
 
-One-time setup. The idea: take the call on the Mac, and send the caller's voice both to your
-headset and into BlackHole, which the captioner listens to. Your own voice goes from your mic into
-the call and is never captioned.
+The sound routing is automatic (see above). Two things only you can do:
 
-1. **Headset with a mic.** A Mac mini has no built-in microphone. A USB headset is the most
+1. **A headset with a mic.** A Mac mini has no built-in microphone. A USB headset is the most
    reliable; AirPods switch to a lower-quality mode when their mic is in use, so test them first.
+   Set it as the Mac's input: System Settings → Sound → **Input**.
 2. **Take iPhone calls on the Mac.** iPhone: Settings → Apps → Phone → Calls on Other Devices →
    on, and turn on your Mac. Mac: FaceTime → Settings → **Calls from iPhone**. Same Apple ID,
    Wi-Fi and Bluetooth on.
-3. **Split the output.** Open **Audio MIDI Setup** → **+** → **Create Multi-Output Device**. Tick
-   your headset first, then your BlackHole. Tick **Drift Correction** on the BlackHole row.
-4. **System Settings → Sound:** Output = **Multi-Output Device**, Input = your headset mic.
 
-The volume keys don't work on a Multi-Output Device; set the headset volume in Audio MIDI Setup.
-Switch Sound Output back to your usual device after calls.
+While captions run, the Mac's sound output is **Call Captions Output**; when you stop them it
+switches back to what you had. The volume keys don't change a multi-output device, so set your
+headset's volume before the call or use the buttons on the headset.
+
+<details>
+<summary>Doing the routing by hand instead</summary>
+
+Open **Audio MIDI Setup** → **+** → **Create Multi-Output Device**. Tick your headset first, then
+your BlackHole, and tick **Drift Correction** on the BlackHole row. Then set System Settings →
+Sound → Output to that device before a call, and back afterwards.
+</details>
 
 ## Use it
 
-Double-click **Call Captions** in Applications, then answer or place the call **on the Mac**. It
-opens an iTerm (or Terminal) window with the captions; Ctrl+C stops them. The first time, macOS
+Double-click **Call Captions** in Applications **before** the call, then answer or place the call
+**on the Mac**. It opens an iTerm (or Terminal) window with the captions and switches the sound
+output; Ctrl+C stops the captions and switches the sound back. The first time, macOS
 asks to let Call Captions control the terminal and the terminal to use the microphone: allow both.
 
 - Cyan line: what they said. Yellow ➜ line: the English.
@@ -123,13 +133,15 @@ The models are downloaded from Hugging Face during setup and are covered by thei
 
 ## Troubleshooting
 
-- **No captions:** `call-captions --list-devices` should list your BlackHole. Make sure that
-  BlackHole is ticked in the Multi-Output Device and Sound Output is the Multi-Output Device.
-  If you have several BlackHoles, set `--device` to the one you ticked.
+- **No captions:** start the captions before the call, so the call uses **Call Captions Output**.
+  `call-captions setup` rebuilds the routing if something changed (for example a different
+  headset); `call-captions audio` picks a new one.
 - **Silence even though audio plays:** System Settings → Privacy & Security → Microphone → allow
   your terminal app, then reopen it. Without that permission macOS gives apps silence.
+- **The caller can't hear you:** System Settings → Sound → Input should be your headset mic, not
+  BlackHole. `call-captions` warns about this.
 - **Volume booster apps:** apps that boost one app's volume (for example per-app mixers) can
-  mute that app's audio when the output is a Multi-Output Device. Leave the calling app at 100%.
+  mute that app's audio when the output is a multi-output device. Leave the calling app at 100%.
 - **"falling behind real time":** add `--no-partials`, or try `--asr parakeet`.
 
 ## Uninstall
@@ -138,9 +150,9 @@ The models are downloaded from Hugging Face during setup and are covered by thei
 call-captions uninstall
 ```
 
-One command removes the app, your settings and, through Homebrew, the program with its Python
-and models. Homebrew also removes helpers it installed only for Call Captions (such as `uv`);
-anything you installed yourself stays. It never touches BlackHole or the Multi-Output Device.
+One command removes the app, the Call Captions Output device, your settings and, through
+Homebrew, the program with its Python and models. Homebrew also removes helpers it installed only for Call Captions (such as `uv`);
+anything you installed yourself stays. It never touches BlackHole or audio devices you made yourself.
 
 Running only `brew uninstall call-captions` removes the program, Python and models too, and
 leaves just the small app launcher and `~/call-captions/options.txt`.
