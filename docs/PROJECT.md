@@ -27,10 +27,11 @@ iPhone call ──► taken on the Mac (Continuity "Calls from iPhone")
       your headset         BlackHole (loopback driver)
       (you hear it)              │
                                  ▼
-                    live_captions.py:  Silero VAD → Parakeet-ja (MLX) → LFM2-ENJP (MLX)
+                    live_captions.py:  Silero VAD → Parakeet-ja (Neural Engine + GPU) → LFM2-ENJP (GPU)
                                  │
                                  ▼
                   terminal window: Japanese line + English line
+                  (+ word lookups: lookup.py --serve, a CPU-only child process)
 ```
 
 Your own voice goes from your headset mic straight into the call and never reaches BlackHole,
@@ -63,7 +64,7 @@ off).
 | Japanese → English | [LiquidAI LFM2-350M-ENJP-MT](https://huggingface.co/LiquidAI/LFM2-350M-ENJP-MT) | 0.35B | LFM Open License |
 | Optional speech model | [Kotoba-Whisper v2.0](https://huggingface.co/kotoba-tech/kotoba-whisper-v2.0), [MLX build](https://huggingface.co/kaiinui/kotoba-whisper-v2.0-mlx) (`--asr kotoba`, default until 1.4.0) | 0.76B | Apache-2.0 |
 | Optional speech model | [Qwen3-ASR 1.7B / 0.6B](https://huggingface.co/Qwen/Qwen3-ASR-1.7B), [8-bit MLX builds](https://huggingface.co/moona3k/mlx-qwen3-asr-1.7b-8bit) via [mlx-qwen3-asr](https://github.com/moona3k/mlx-qwen3-asr) (`--asr qwen3`, `qwen3-small`) | 1.7B / 0.6B | Apache-2.0 |
-| Speech → text on the Neural Engine (`--turbo`) | [Parakeet 0.6B ja, Core ML build](https://huggingface.co/FluidInference/parakeet-0.6b-ja-coreml) (FluidInference) | 0.6B | CC-BY-4.0 |
+| Speech → text on the Neural Engine (turbo, the default) | [Parakeet 0.6B ja, Core ML build](https://huggingface.co/FluidInference/parakeet-0.6b-ja-coreml) (FluidInference) | 0.6B | CC-BY-4.0 |
 | Spoken English (`--speak`) | The voices built into macOS (`say`) | none | part of macOS |
 | Word lookup: dictionary | [JMdict](https://www.edrdg.org/wiki/index.php/JMdict-EDICT_Dictionary_Project) (EDRDG), split into words by [fugashi](https://github.com/polm/fugashi) + [unidic-lite](https://github.com/polm/unidic-lite) | 220k entries | CC BY-SA 4.0 / BSD |
 | Word lookup: translation | [LFM2-350M-ENJP-MT GGUF](https://huggingface.co/LiquidAI/LFM2-350M-ENJP-MT-GGUF), 8-bit, CPU | 0.35B | LFM Open License |
@@ -113,8 +114,11 @@ After the other person stops talking, a line appears after:
    sentence, so it costs about the same every time (about 0.8 s on an M4 Mac mini). Parakeet and
    Qwen3-ASR process only the actual audio.
 3. **Translation**: about 0.1 to 0.3 s with LFM2-ENJP (0.35B).
-4. **Voice**: making the audio with `say` takes about 0.1 to 0.2 s; Fred, the default robot
-   voice, is a simple formant voice and the quickest to make.
+4. **Voice**: making the audio with `say` takes about 0.1 to 0.2 s with Fred, the robot voice
+   (a simple formant voice, the quickest to make; the default up to 1.7). Since 1.8 the default
+   is the Mac's system voice, which can be a Siri voice: more natural, a little slower to make.
+   The draft of a line is made ahead of time, so usually only the final line's audio is waited
+   for.
 
 Since 1.3.0, steps 2 to 4 start at a 0.25 s pause (`--early`) instead of waiting for the full
 0.5 s. If the pause turns out to end the sentence, the result is used as is: the audio is the
@@ -191,9 +195,10 @@ Other things considered for speed:
   Mac's output on BlackHole, a line through the default output, which reaches the right ear the
   way a call does. That checks both halves of the routing before a real call.
 
-### Turbo: the Neural Engine for hearing (1.6)
+### Turbo: the Neural Engine for hearing (1.6; the default since 1.8)
 
-The Mac has three separate engines: CPU, GPU and Neural Engine. `--turbo`:
+The Mac has three separate engines: CPU, GPU and Neural Engine. Turbo (`--no-turbo` turns it
+off):
 
 | Job | Chip | How |
 | --- | --- | --- |
@@ -210,8 +215,9 @@ The Mac has three separate engines: CPU, GPU and Neural Engine. `--turbo`:
   on the Mac that crashed with a segmentation fault as soon as turbo started: MLX must not be used
   from two threads. 1.6.1 removed the lanes. With hearing down to a few hundredths of a second,
   they would have saved almost nothing anyway.
-- **Decoder:** the Core ML build's own CTC head was worse on the Mac (「yorojapan」 came out as
-  「yロジャpan」, a comma was lost and the translation then invented a sentence). Since 1.6.1 the
+- **Decoder:** the Core ML build's own CTC head was worse on the Mac (a company name in Latin
+  letters came out half in katakana, a comma was lost and the translation then invented a
+  sentence). Since 1.6.1 the
   Core ML encoder's output goes to Parakeet's TDT decoder on MLX instead, the same one the GPU
   version uses; on the voicemail that path gives exactly the GPU version's text. The CTC head
   stays as a fallback if the MLX model can't load.
@@ -221,8 +227,8 @@ The Mac has three separate engines: CPU, GPU and Neural Engine. `--turbo`:
   voicemail played in real time): control 0.62 s average / 0.77 s slowest from the end of speech
   to the English on screen; quick 0.40 s / 0.44 s; quick with a word lookup every second 0.42 s /
   0.48 s. Quick split the three utterances into five sentence lines, with the same words, and
-  translated them better (お世話になります → "I'm sorry to bother you." instead of control's
-  "I'm Hotta from … My name is Hotta.").
+  translated them better (お世話になります got its own line, "I'm sorry to bother you.", instead
+  of control's run-on line that gave the caller's name twice).
 - **Core ML in a helper process (1.7):** 1.6.0 to 1.6.2 crashed with a segmentation fault as the
   turbo race started. The 1.6.2 report showed every Python thread idle (the captioner waiting for
   audio), so the crash was in one of Core ML's own background threads; the same model worked in
@@ -238,6 +244,12 @@ The Mac has three separate engines: CPU, GPU and Neural Engine. `--turbo`:
   (a207b1a, "Fix NumPy owner release from Core ML queues"), not in a release yet. Workaround: the
   helper keeps every input dict for its next 64 predictions, so the late release never drops the
   last reference.
+- **The default since 1.8:** with that workaround the owner's 1.7.1 bench ran turbo with no
+  crash. Live race on an M4 Mac mini: turbo 0.37 s average / 0.39 s slowest, quick (GPU) 0.40 s /
+  0.44 s, control 0.62 s / 0.77 s; turbo with a lookup every second 0.37 s / 0.41 s. The Core ML
+  encoder is 8-bit (the only build there is), so now and then a word comes out differently from
+  the GPU version (a name spelled another way, a comma lost), and once that changed the
+  translation's wording. The owner chose speed; `--no-turbo` keeps the GPU's text.
 - **The Neural Engine model:** a fixed 15 s window (shorter audio is padded). Its vocabulary is
   identical to the MLX build's. If it can't load, the captioner falls back to the GPU Parakeet.
 - **Parakeet stopping after one sentence**, now handled for both decoders: on a real voicemail,
@@ -256,10 +268,18 @@ runs in a child process set up like a real session (`--race MODE`), with Python'
 1.6.0 and 1.6.1 both crashed with a bare segmentation fault as the turbo race started, which said
 nothing about where. Now a crash ends only that race and prints the Python stack.
 
-### Word lookup (1.6.0)
+### Word lookup (1.6.0; in the captions window since 1.8.0)
 
-`call-captions lookup` (the app opens it in an iTerm2 split) watches for Japanese being copied;
-iTerm2 copies whatever is highlighted. For each highlight:
+The lookup watches for Japanese being copied (iTerm2 copies whatever is highlighted; ⌘C works
+anywhere). Up to 1.7 it only ran in a pane of its own that the app opened, so starting
+`call-captions` in a terminal had no lookup at all. Since 1.8 the captioner starts it as a child
+process (`lookup.py --serve`, its own session, CPU only), reads its results as JSON lines and
+shows them among the captions behind a magenta bar. The voice says the dictionary's first meaning
+when one word was highlighted, otherwise the translation. A lookup is said after the line playing
+now and is never skipped (live lines skip when a newer one is waiting). A newer highlight cuts the
+explanation of the one before short. If the captioner ends, however it ends, the child sees it
+(its parent changes) and stops its models. `call-captions lookup` still runs it on its own.
+For each highlight:
 
 1. **Dictionary, instant (~1 ms):** fugashi/UniDic splits the text into words with their
    dictionary forms; the longest matching JMdict entry wins, so set phrases (恐れ入りますが,
@@ -285,7 +305,7 @@ explanation start together.
 | Path | What it is |
 | --- | --- |
 | `live_captions.py` | The captioner: audio input, VAD, speech recognition, translation, terminal display, bench |
-| `lookup.py` | The word lookup pane: dictionary build and lookups, the CPU models, watching highlights |
+| `lookup.py` | The word lookup: dictionary build and lookups, the CPU models, watching highlights (`--serve` for the captioner) |
 | `bin/call-captions` | The command users run: setup, first run, sound routing, app, uninstall |
 | `src/audio.c` | `call-captions-audio`, a small CoreAudio helper built during `brew install`: sets up and switches the routing, and plays the voice and the call to each ear (`monitor`) |
 | `app/` | Template for `Call Captions.app` (Info.plist, launcher script, icon) |

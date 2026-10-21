@@ -101,9 +101,10 @@ From a terminal it's the same: `call-captions --hint "株式会社サンプル �
 
 ## Hear the English in your left ear
 
-On by default since 1.5.0: a robot voice says each English line in your **left ear**, while the
-call plays only in your **right ear**. It's the speech built into macOS (free, no download, almost
-no CPU). The English goes only to your headset, never into the call. **Headphones only**: on the
+On by default since 1.5.0: a voice says each English line in your **left ear**, while the
+call plays only in your **right ear**. It's the speech built into macOS (free, almost no CPU), in
+the Mac's **system voice**: Siri, if you choose a Siri voice there (since 1.8.0; before, the robot
+voice Fred). The English goes only to your headset, never into the call. **Headphones only**: on the
 Mac's speakers it turns itself off, since your microphone could pass it to the caller.
 
 Check it once before a call:
@@ -117,8 +118,11 @@ way a call does).
 
 - `--no-speak`: captions only. `--speak mix`: the call stays in both ears, the English is added
   on the left.
-- `--voice Fred` (default) is the classic robot voice, the quickest to make. Any voice from
-  `say -v '?'` works, for example `--voice Samantha` for a clearer one.
+- **Siri**: System Settings → Accessibility → Read & Speak (Spoken Content before macOS 26) →
+  System voice → choose a Siri voice. macOS doesn't let apps pick a Siri voice by name, only use
+  it as the system voice. The window says which voice it uses when it starts.
+- `--voice Fred` is the classic robot voice, the quickest to start talking. Any voice from
+  `say -v '?'` works, for example `--voice Samantha`.
 - `--rate 240` is the speed in words per minute; faster keeps up better.
 - If they keep talking, the voice skips a line rather than falling behind (the line stays on
   screen), so it always speaks the newest sentence.
@@ -130,24 +134,29 @@ Try it on a recording: `call-captions --file ~/Downloads/voicemail.m4a`.
 
 ## Look up a word
 
-Highlight Japanese in the captions with the mouse. The **lookup pane** beside the captions shows:
+Highlight Japanese in the captions with the mouse. The answer shows right there, among the
+captions behind a magenta bar, and the meaning is said in your left ear:
 
 ```
-伺ってもよろしいですか
-  伺う    うかがう   to call on someone; to ask; to inquire (humble)       ← dictionary, instant
-  宜しい  よろしい   good; OK (honorific)
-  ➜ May I ask?                                                          ← translation
-  ✎ "Would it be okay to ask?" It's polite and respectful.              ← explanation
+┃ 伺ってもよろしいですか
+┃   伺う    うかがう   to call on someone; to ask; to inquire (humble)     ← dictionary, instant
+┃   宜しい  よろしい   good; OK (honorific)
+┃   ➜ May I ask?                                                        ← translation, 0.2 s
+┃   ✎ "Would it be okay to ask?" It's polite and respectful.            ← explanation, 1 s
 ```
 
-- The app opens the pane for you (an iTerm2 split, or a second Terminal window). By hand:
-  `call-captions lookup`. `--no-lookup` in `options.txt` stops the app from opening it.
+- On by default (since 1.8.0, however you start Call Captions). The voice says the dictionary
+  meaning for one word, otherwise the translation, right after the line it's saying, and never
+  skips it. `--no-lookup-voice` keeps it silent, `--no-lookup` turns the lookup off.
+- The explanation comes from a small model and is a hint: when it disagrees with the dictionary
+  line, trust the dictionary.
+- `call-captions lookup` runs it on its own in any terminal window (`--stdin` to type phrases).
 - It runs **on the CPU only**, in its own program, so it never slows the captions or the voice:
   the dictionary is [JMdict](https://www.edrdg.org/wiki/index.php/JMdict-EDICT_Dictionary_Project),
   the translation the same LFM2-ENJP model (CPU build), the explanation LiquidAI LFM2.5-1.2B, both
   through llama.cpp with the GPU switched off.
-- iTerm2 copies whatever you highlight, which is how the pane sees it. In Terminal, press Cmd+C
-  after highlighting. Nothing is saved and nothing leaves the Mac.
+- iTerm2 copies whatever you highlight, which is how the lookup sees it. In Terminal (or any
+  other app), press Cmd+C after highlighting. Nothing is saved and nothing leaves the Mac.
 
 ## Speed
 
@@ -157,19 +166,16 @@ English appeared **0.40 s** after the speaker stopped on average (slowest 0.44 s
 (slowest 0.77 s) before. Sentences also come out one per line, which the translator handles
 better. `--no-quick-end` brings back the old behaviour.
 
-**Turbo (`--turbo`, still being tested):** the heavy part of speech recognition (Parakeet's
-encoder) moves to the Mac's **Neural Engine**, about 1.7x faster than the GPU there (0.07 to 0.13 s
-per sentence against 0.12 to 0.21 s). Core ML crashed next to the live captioner on a real Mac, so
-since 1.7 it runs in a helper process of its own: if it ever stops, the captions switch to the GPU
-on the spot and carry on.
+**Turbo (on by default since 1.8):** the heavy part of speech recognition (Parakeet's encoder)
+runs on the Mac's **Neural Engine**, about 1.7x faster than the GPU there (0.07 to 0.13 s per
+sentence against 0.13 to 0.25 s). Live on an M4 Mac mini, lines showed 0.37 s after the speaker
+stopped on average, against 0.40 s on the GPU. It runs in a helper process of its own: if it ever
+stops, the captions switch to the GPU on the spot and carry on. Its compressed (8-bit) model can
+hear a word or a name a little differently; `--no-turbo` keeps everything on the GPU.
 
-```bash
-call-captions --turbo
-```
-
-| Job | Normal | `--turbo` |
+| Job | Default | `--no-turbo` |
 | --- | --- | --- |
-| Hearing Japanese | GPU | Neural Engine (encoder, in a helper process), GPU (decoder) |
+| Hearing Japanese | Neural Engine (encoder, in a helper process), GPU (decoder) | GPU |
 | Translating | GPU | GPU |
 | Word lookup | CPU | CPU |
 | Voice | CPU | CPU |
@@ -182,20 +188,20 @@ call-captions bench ~/Downloads/voicemail.m4a
 
 Plays your recording in real time through three set-ups and times each line from the end of
 speech to the English on screen: **control** (as up to 1.6: a line after the full pause),
-**quick** (the default since 1.7) and **turbo** (`--turbo`: quick plus the Neural Engine). Each runs in a process of its own, like a real session, so if one crashes the bench
+**quick** (as in 1.7, now `--no-turbo`) and **turbo** (the default: quick plus the Neural Engine).
+Each runs in a process of its own, like a real session, so if one crashes the bench
 says where and carries on. Then it times the word lookup and runs the fastest set-up again while
 lookups fire every second, to show the lookup doesn't slow it down.
 Add `--models parakeet,parakeet-ane,qwen3,kotoba` to also compare other speech models (first use
-downloads them). If turbo wins on your Mac, put `--turbo` in `options.txt`.
+downloads them). If quick suits you better, put `--no-turbo` in `options.txt`.
 
 ## Options
 
 | Option | What it does |
 | --- | --- |
-| `--turbo` | Speech recognition's encoder on the Neural Engine, and lines finish at sentence ends. |
+| `--no-turbo` | Speech recognition on the GPU only, as before 1.8. (By default its encoder runs on the Neural Engine.) |
 | `--no-quick-end` | Wait out the full pause before finishing a line, as up to 1.6. (By default a line finishes as soon as a sentence ends.) |
-| `--asr parakeet` | Default. NVIDIA Parakeet TDT-CTC 0.6B Japanese on the GPU. Adds punctuation. Spells English names as it hears them. |
-| `--asr parakeet-ane` | The same Parakeet on the Neural Engine (Core ML). `--turbo` uses it. |
+| `--asr parakeet` | Default. NVIDIA Parakeet TDT-CTC 0.6B Japanese, its encoder on the Neural Engine (GPU with `--no-turbo`). Adds punctuation. Spells English names as it hears them. |
 | `--asr qwen3` | Qwen3-ASR 1.7B (8-bit). Most accurate on natural conversation in published tests; slower. |
 | `--asr qwen3-small` | Qwen3-ASR 0.6B (8-bit). Faster, less accurate. |
 | `--asr kotoba` | Kotoba-Whisper v2.0, the default before 1.4.0. |
@@ -205,12 +211,14 @@ downloads them). If turbo wins on your Mac, put `--turbo` in `options.txt`.
 | `--hint "..."` | Names you expect; nudges Kotoba-Whisper and Qwen3-ASR toward those spellings. |
 | `--no-speak` | Captions only. By default the English is said in your left ear, the call in your right. |
 | `--speak mix` | Keep the call in both ears; the English is added on the left. |
-| `--voice NAME` / `--rate 240` | Voice (default Fred, the robot voice) and speed in words per minute. |
+| `--voice NAME` / `--rate 240` | Voice (default: the Mac's system voice, Siri if you chose it; `Fred` is the robot) and speed in words per minute. |
+| `--voice-volume 1.5` | Louder voice, 0 to 2. |
 | `--english-only` | Hide the Japanese lines. |
 | `--no-partials` | Only show finished sentences. |
 | `--end-silence 0.4` | Pause (seconds) that ends a sentence. Default 0.5. Shorter is sooner but can cut sentences in two. |
 | `--early 0.15` | Start the final text after this much pause, before knowing it ends the sentence. Same text, sooner. `0` turns it off. 0.25 with `--no-quick-end`. |
-| `--no-lookup` | (in `options.txt`) The app doesn't open the word lookup pane. |
+| `--no-lookup` | No word lookup. |
+| `--no-lookup-voice` | Show word lookups but don't say them. |
 | `--log calls.txt` | Save a transcript (time, Japanese, English). |
 | `--device NAME` | Input to listen on. Default: the first device named BlackHole. |
 | `--list-devices` | Show input devices. |
@@ -272,9 +280,9 @@ device (so you can reinstall or roll back without setting up again).
 
 ## Versions and rollback
 
-The latest version is 1.7.0: lines finish as soon as a sentence ends, `--turbo` runs the Neural
-Engine in a crash-proof helper, and the word lookup pane (1.6). The voice is on by default since
-1.5.0. Version 1.2.0 is a
+The latest version is 1.8.0: turbo (the Neural Engine) and the Mac's system voice (Siri) by
+default, and the word lookup shows and speaks in the captions window. Lines finish as soon as a
+sentence ends since 1.7, and the voice is on by default since 1.5.0. Version 1.2.0 is a
 milestone: confirmed working and kept installable. To stay on your current version,
 `brew pin call-captions`. If an update ever breaks something:
 

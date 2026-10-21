@@ -1,19 +1,22 @@
 #!/usr/bin/env python3
 """Call Captions word lookup: highlight Japanese in the captions window to see what it means.
 
-Runs in its own window or pane and only on the CPU, so the live captions never wait for it (their
-speech recognition runs on the Neural Engine or the GPU and their translation on the GPU):
+The captioner runs this in a process of its own (--serve) and shows the results among the
+captions; `call-captions lookup` runs it in a window of its own. It runs only on the CPU, so the
+live captions never wait for it (their speech recognition runs on the Neural Engine or the GPU
+and their translation on the GPU):
 
   dictionary   JMdict (EDRDG) words and set phrases with readings, instant
   ➜            the highlighted text translated by LiquidAI LFM2-350M-ENJP-MT (llama.cpp, CPU)
   ✎            a one-line explanation by LiquidAI LFM2.5-1.2B-Instruct (llama.cpp, CPU), given the
                dictionary results so it stays accurate, shown as it's written
 
-iTerm2 copies whatever you highlight, so this watches for Japanese text being copied. Nothing
-is saved, and nothing leaves the Mac.
+iTerm2 copies whatever you highlight, so this watches for Japanese text being copied (⌘C works
+too, in any app). Nothing is saved, and nothing leaves the Mac.
 """
 
 import argparse
+import collections
 import gzip
 import json
 import os
@@ -45,6 +48,7 @@ EXPLAIN_PROMPT = (
 )
 
 JAPANESE = re.compile(r"[぀-ヿ㐀-鿿ｦ-ﾟ]")
+PUNCTUATION = re.compile(r"[\s、。，．,.？！?!・「」『』（）()]")
 DIM, BOLD, CYAN, YELLOW, GREEN, RESET = "\033[2m", "\033[1m", "\033[36m", "\033[93m", "\033[32m", "\033[0m"
 
 # JMdict marks politeness with these; everything else in its notes is left out to stay short.
@@ -56,6 +60,9 @@ POLITENESS = {
 
 
 # ---------------------------------------------------------------- dictionary
+
+# A word or set phrase found in a highlight. short: its first meaning, to say out loud.
+Word = collections.namedtuple("Word", "form reading meaning notes written short")
 
 
 def build_dictionary(gz_path=None, db_path=DICT_DB):
@@ -134,7 +141,7 @@ class Dictionary:
         return [(json.loads(k), json.loads(r), json.loads(s)) for p, k, r, s in rows if p or not phrases_only]
 
     def words(self, text, limit=8):
-        """[(text as written, reading, meaning, politeness)] for the words and set phrases in text."""
+        """The words and set phrases in text, as Word()s."""
         tokens = [t for t in self.tagger(text) if t.surface]
         surfaces = [t.surface for t in tokens]
 
@@ -180,7 +187,8 @@ class Dictionary:
             reading = kana[0] if kana and kana[0] != form else ""
             meaning = "; ".join(dict.fromkeys(g for s in senses[:2] for g in s["g"][:2]))
             notes = sorted({m for s in senses for m in s["m"]})
-            found.append((form, hiragana(reading), meaning, notes))
+            short = ", ".join(g.replace("...", "").strip(" ,") for g in senses[0]["g"][:2])
+            found.append(Word(form, hiragana(reading), meaning, notes, written, short))
         return found
 
 
@@ -296,19 +304,30 @@ class Lookup:
             if m:
                 m.close()
 
-    def run(self, text):
-        """Look text up; returns the timings (seconds) of each part."""
-        out = (lambda *a: None) if self.quiet else print
-        write = (lambda x: None) if self.quiet else sys.stdout.write
+    def run(self, text, emit=None, newer=None):
+        """Look text up; returns the timings (seconds) of each part. Each part is printed as it is
+        ready, or handed to emit(event) instead (--serve). If newer() turns true, a newer highlight
+        is waiting: the explanation stops there."""
+        printing = emit is None and not self.quiet
+        out = print if printing else (lambda *a: None)
+        write = sys.stdout.write if printing else (lambda x: None)
+        emit = emit or (lambda event: None)
         self.current += 1
         mine, t0, times = self.current, time.monotonic(), {}
         out(f"\n{BOLD}{text}{RESET}")
         words = self.dictionary.words(text)
-        for form, reading, meaning, notes in words:
-            note = f" {GREEN}({', '.join(notes)}){RESET}" if notes else ""
-            out(f"  {CYAN}{form}{RESET}  {DIM}{reading}{RESET}  {meaning}{note}")
+        for w in words:
+            note = f" {GREEN}({', '.join(w.notes)}){RESET}" if w.notes else ""
+            out(f"  {CYAN}{w.form}{RESET}  {DIM}{w.reading}{RESET}  {w.meaning}{note}")
         times["dictionary"] = time.monotonic() - t0
-        facts = "; ".join(f"{f} = {m.split(';')[0]}" + (f" ({', '.join(n)})" if n else "") for f, _, m, n in words)
+        # One word highlighted: the dictionary's meaning is what to say. Otherwise the translation.
+        one_word = len(words) == 1 and words[0].written == PUNCTUATION.sub("", text)
+        event = {"id": mine, "text": text, "words": [[w.form, w.reading, w.meaning, w.notes] for w in words]}
+        if one_word:
+            event["say"] = words[0].short
+        emit(event)
+        facts = "; ".join(f"{w.form} = {w.meaning.split(';')[0]}" + (f" ({', '.join(w.notes)})" if w.notes else "")
+                          for w in words)
         if not self.translator:
             return times
 
@@ -336,8 +355,9 @@ class Lookup:
             en = f"(no translation: {e})"
         times["translation"] = time.monotonic() - t0
         out(f"  {YELLOW}➜ {en}{RESET}")
+        emit({"id": mine, "en": en, **({} if one_word or en.startswith("(no ") else {"say": en})})
 
-        shown = 0
+        shown, checked = 0, time.monotonic()
         write(f"  {DIM}✎ ")
         while True:
             finished = done.wait(0.03)
@@ -347,8 +367,15 @@ class Lookup:
             sys.stdout.flush()
             if finished and shown == len(pieces):
                 break
+            if newer and time.monotonic() - checked > 0.15:
+                checked = time.monotonic()
+                if newer():
+                    self.current += 1  # the explanation stops; the newer highlight goes next
+                    write(f"{RESET}\n")
+                    return times
         write(f"{RESET}\n")
         times["explanation"] = time.monotonic() - t0
+        emit({"id": mine, "explain": "".join(pieces).strip()})
         return times
 
 
@@ -362,19 +389,23 @@ def clipboard():
         return ""
 
 
-def watch(lookup):
-    print(f"{BOLD}Word lookup{RESET}  {DIM}highlight Japanese in the captions to see what it means. "
-          f"Ctrl+C to close.{RESET}")
+def watch(lookup, emit=None):
+    if emit is None:
+        print(f"{BOLD}Word lookup{RESET}  {DIM}highlight Japanese in the captions to see what it means. "
+              f"Ctrl+C to close.{RESET}")
+    owner = os.getppid() if emit else None
     last = clipboard()
     while True:
         time.sleep(0.15)
+        if owner and os.getppid() != owner:
+            return  # the captioner is gone
         text = clipboard()
         if text == last:
             continue
         last = text
         text = " ".join(text.split())
         if JAPANESE.search(text) and len(text) <= 80:
-            lookup.run(text)
+            lookup.run(text, emit, newer=lambda: clipboard() != last)
 
 
 def main():
@@ -383,6 +414,8 @@ def main():
     ap.add_argument("--download-only", action="store_true", help="get the dictionary and CPU models, then exit")
     ap.add_argument("--no-models", action="store_true", help="dictionary only")
     ap.add_argument("--stdin", action="store_true", help="look up lines typed or piped in, instead of highlights")
+    ap.add_argument("--serve", action="store_true",
+                    help="for the captioner: watch highlights and write each result as a line of JSON")
     ap.add_argument("--quiet", action="store_true", help="don't print the lookups (for timing)")
     ap.add_argument("--bench", nargs="*", metavar="PHRASE", help="time lookups of these phrases, then exit")
     args = ap.parse_args()
@@ -410,6 +443,12 @@ def main():
             for p, t in results:
                 print("  " + p + "  " + "  ".join(f"{k} {v:.2f}" for k, v in t.items()))
             print("BENCH_JSON " + json.dumps([t for _, t in results]))
+        elif args.serve:
+            def emit(event):
+                print(json.dumps(event, ensure_ascii=False), flush=True)
+
+            emit({"ready": True, "models": lookup.translator is not None})
+            watch(lookup, emit)
         elif args.stdin:
             print("LOOKUP_READY", flush=True)
             for line in sys.stdin:

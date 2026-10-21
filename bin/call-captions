@@ -8,7 +8,7 @@
 # removed without asking.
 set -euo pipefail
 
-VERSION="1.7.1"
+VERSION="1.8.0"
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 settings="${CALL_CAPTIONS_HOME:-$HOME/call-captions}"
 py="$here/venv/bin/python"
@@ -28,49 +28,84 @@ usage() {
 ${b}Call Captions $VERSION${r}: live English for Japanese phone calls, all on your Mac.
 
 ${b}WHAT IT DOES${r}
-  - Shows what the caller says: Japanese in cyan, the English below it (yellow ➜).
-  - Says the English in your LEFT ear with a robot voice; the call plays in your RIGHT ear.
+  - Shows what the caller says: the Japanese in cyan, the English below it (yellow ➜).
+    Gray lines are drafts while they're still talking; the final line replaces them.
+  - Says the English in your LEFT ear (the Mac's system voice: Siri if you chose it, see VOICE);
+    the call plays in your RIGHT ear.
+  - Word lookup: highlight Japanese you don't know and its meaning shows and is said in your ear.
   - Runs entirely on this Mac. Nothing is sent anywhere; the caller hears a normal call.
-  - Text appears within about a second after they pause. Gray lines are drafts while they talk.
+  - A line shows about 0.4 s after the caller finishes a sentence.
 
 ${b}USE IT${r}
   call-captions                  start it BEFORE the call (or open "Call Captions" in Applications)
   Ctrl+C                         stop; the Mac's sound goes back to normal
   Take the call on this Mac (iPhone calls through Continuity) with your headset on.
 
-${b}WORD LOOKUP${r}
-  Highlight Japanese in the captions with the mouse: the pane beside them shows each word's
-  reading and meaning at once, then a translation and a one-line explanation. It runs on the
-  CPU only, so the captions never slow down. The app opens it for you; by hand: call-captions lookup
-  --no-lookup                    (in options.txt) don't open the lookup pane
+${b}WORD LOOKUP${r} (on by default)
+  Highlight Japanese in the captions with the mouse (iTerm2 copies what you highlight; ⌘C works
+  too, in any app). Below the captions, behind a magenta ┃ bar, you get:
+    each word and set phrase with its reading and dictionary meaning     at once (0.02 s)
+    ➜ a translation of what you highlighted                              about 0.2 s
+    ✎ a one-line explanation (a hint: trust the dictionary line first)    about 1 s
+  Your left ear hears the meaning: the dictionary's for one word, else the translation.
+  It runs on the CPU only, so the captions and their voice never slow down.
+  --no-lookup                    no word lookup
+  --no-lookup-voice              show lookups but don't say them
+  call-captions lookup           the lookup on its own, in any terminal window
+  call-captions lookup --stdin   type or paste Japanese instead of highlighting it
+
+${b}VOICE${r} (on by default; headphones only)
+  The English goes to your headset only, never into the call. On speakers the voice turns itself
+  off, so the caller can't hear it.
+  Siri: System Settings → Accessibility → Read & Speak (Spoken Content before macOS 26) →
+        System voice → choose a Siri voice. Call Captions uses that voice from then on.
+  --voice Fred                   the classic robot voice, the fastest to start talking
+  --voice Samantha               another Mac voice by name (list them: say -v '?'; Siri voices
+                                 aren't listed: choose them as the system voice above)
+  --rate 280                     talk faster, in words per minute (default 240)
+  --voice-volume 1.5             louder voice, 0 to 2 (default 1)
+  --speak mix                    the call in both ears, the English added on the left
+  --no-speak                     captions only, no voice
+
+${b}SPEED AND ACCURACY${r}
+  By default speech recognition runs on the Neural Engine (turbo) and a line shows as soon as a
+  sentence ends (quick end). If the Neural Engine part stops, the GPU takes over at once.
+  --no-turbo                     speech recognition on the GPU only (as before 1.8; 0.03 s slower,
+                                 a few words can come out differently)
+  --no-quick-end                 wait out the full pause before showing a line (as before 1.7)
+  --asr qwen3                    more accurate speech recognition, slower (downloads once)
+  --asr qwen3-small | kotoba     other speech models (default: parakeet, the fastest)
+  --hint "株式会社サンプル 山田" names you expect (only with --asr qwen3, qwen3-small or kotoba)
+  --mt plamo                     a much larger translation model (downloads 5 GB once; slower)
+  --end-silence 0.4              the pause, in seconds, that ends a line (default 0.5)
+  --early 0.15                   start the final text after this pause, before it's known to end
+                                 the line; same text, sooner (default 0.15; 0 turns it off)
+  --soft-max 8                   after this many seconds, end a line at any short pause (default 8)
+  --hard-max 15                  always end a line at this many seconds (default 15)
+  --vad-threshold 0.5            how sure (0 to 1) it must be that someone is talking (default 0.5)
+
+${b}WHAT YOU SEE${r}
+  --english-only                 hide the Japanese lines
+  --no-timing                    hide the timing after each line (asr: speech, mt: translation)
+  --no-partials                  no gray drafts while they talk
+  --partial-every 1.0            seconds between draft updates (default 1)
+  --draft-after 4                translate the draft once someone has talked this many seconds
+                                 (default 4; 0 turns it off)
+  --log calls.txt                also save each line (time, Japanese, English) to this file
+
+${b}SOUND INPUT${r}
+  --device "BlackHole 64ch"      the input the call arrives on (default: your BlackHole)
+  --list-devices                 list the inputs
 
 ${b}CHECK IT${r}
   call-captions test-voice       hear "Left ear…" on the left and "Right ear…" on the right
-  call-captions --file AUDIO     run a recording through it, e.g. a voicemail
-  call-captions bench AUDIO      race the old way, the default and --turbo on your recording,
-                                 and time the word lookup
-
-${b}VOICE${r}
-  --no-speak                     captions only, no voice
-  --speak mix                    the call in both ears, the English added on the left
-  --voice Samantha               a clearer voice instead of the robot (all voices: say -v '?')
-  --rate 280                     talk faster, in words per minute (default 240)
-  --voice-volume 1.5             louder voice, 0 to 2 (default 1)
-  Headphones only: on speakers the voice turns itself off so the caller can't hear it.
-
-${b}SPEED AND ACCURACY${r}
-  --no-quick-end                 wait out the full pause before showing a line (by default a line
-                                 shows as soon as a sentence ends)
-  --turbo                        speech recognition on the Neural Engine (being tested)
-  --asr qwen3                    more accurate speech recognition, a bit slower
-                                 (default: parakeet, the fastest)
-  --hint "株式会社サンプル 山田" names you expect (works with --asr qwen3 or --asr kotoba)
-  --end-silence 0.4              end sentences at a shorter pause: sooner, may split sentences
-  --english-only                 hide the Japanese lines
-  --log calls.txt                save a transcript
+  call-captions --file AUDIO     run a recording through it, e.g. a voicemail (--fast: no waiting)
+  call-captions bench AUDIO      time the old way, --no-turbo and the default on your recording,
+                                 the word lookup, and the default with lookups running
+  Problem reports: \$TMPDIR/call-captions-neural-engine.log and call-captions-lookup.log
 
 ${b}USE AN OPTION EVERY TIME${r}
-  Put it in $settings/options.txt, one per line.
+  Put it in $settings/options.txt, one per line, e.g. --voice Fred
   The app and call-captions both read it.
 
 ${b}SETUP${r}
@@ -83,7 +118,7 @@ ${b}SETUP${r}
 ${b}IF AN UPDATE BREAKS SOMETHING${r}
   brew uninstall call-captions && brew install jinreiyu/tap/call-captions-1.2.0
 
-  call-captions help all         every option, with details
+  call-captions help all         the same, plus the technical list of every option
 EOF
 }
 

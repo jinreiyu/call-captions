@@ -3,6 +3,29 @@
 Milestones are versions confirmed working on a real Mac. Each is kept installable for rollback
 as `brew install jinreiyu/tap/call-captions-X.Y.Z` and on the `milestone/vX.Y.Z` branch.
 
+## 1.8.0
+
+Not a milestone yet: roll back with `call-captions-1.2.0` if anything is wrong.
+
+- **Turbo is the default:** speech recognition's encoder runs on the Neural Engine (0.37 s from
+  the end of speech to the English on screen on an M4, against 0.40 s on the GPU). It no longer
+  crashes since 1.7.1, and the GPU still takes over at once if it ever stops. `--no-turbo` keeps
+  everything on the GPU (its text can differ by a word now and then). `--no-quick-end` now works
+  with turbo too.
+- **The Mac's system voice is the default:** choose a Siri voice as the system voice (System
+  Settings → Accessibility → Read & Speak) and the English is said in Siri's voice. macOS only
+  lets apps use a Siri voice that way. The window and `test-voice` say which voice is used.
+  `--voice Fred` brings back the robot. If a voice makes no sound or is missing, it falls back to
+  the system voice, then Samantha, and says so.
+- **The word lookup works however you start Call Captions**, in the captions window itself: up
+  to 1.7 it ran only in a pane the app opened, so starting `call-captions` in a terminal had no
+  lookup. The meaning is now also said in your left ear (the dictionary's for one word, else the
+  translation), right after the line being said, never skipped. `--no-lookup-voice` keeps it
+  silent; `--no-lookup` turns it off. A new highlight cuts the previous explanation short. The app
+  no longer opens a separate pane.
+- `call-captions help` explains every feature and option.
+- The docs no longer quote words from a real voicemail.
+
 ## 1.7.1
 
 Not a milestone yet: roll back with `call-captions-1.2.0` if anything is wrong.

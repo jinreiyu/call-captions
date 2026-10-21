@@ -409,6 +409,7 @@ class Translator:
 # ---------------------------------------------------------------- terminal output
 
 DIM, BOLD, CYAN, YELLOW, RESET = "\033[2m", "\033[1m", "\033[36m", "\033[93m", "\033[0m"
+GREEN, MAGENTA = "\033[32m", "\033[95m"
 
 
 def display_width(s):
@@ -488,6 +489,24 @@ class Screen:
             sys.stdout.write(f"{DIM}{msg}{RESET}\n")
             sys.stdout.flush()
 
+    def lookup(self, event):
+        """Part of a word lookup (see WordLookup), set apart from the captions by a magenta bar."""
+        bar = f"{MAGENTA}┃{RESET} "
+        lines = []
+        if "words" in event:
+            lines.append(f"{bar}{BOLD}{event['text']}{RESET}")
+            for form, reading, meaning, notes in event["words"]:
+                note = f" {GREEN}({', '.join(notes)}){RESET}" if notes else ""
+                lines.append(f"{bar}  {CYAN}{form}{RESET}  {DIM}{reading}{RESET}  {meaning}{note}")
+        if "en" in event:
+            lines.append(f"{bar}  {YELLOW}➜ {event['en']}{RESET}")
+        if "explain" in event:
+            lines.append(f"{bar}  {DIM}✎ {event['explain']}{RESET}\n")
+        with self.lock:
+            self._clear_partial()
+            sys.stdout.write("\n".join(lines) + "\n")
+            sys.stdout.flush()
+
 
 # ---------------------------------------------------------------- spoken English
 
@@ -527,8 +546,34 @@ class VoiceOff(Exception):
     """The voice can't run; captions carry on without it."""
 
 
+def siri_is_system_voice():
+    """Whether the Mac's system voice for English (System Settings → Accessibility → Read & Speak)
+    looks like a Siri voice in its settings. `say` can use a Siri voice only that way: it can't
+    name one with -v."""
+    import subprocess
+
+    try:
+        out = subprocess.run(["defaults", "read", "com.apple.Accessibility", "SpokenContentDefaultVoiceSelectionsByLanguage"],
+                             capture_output=True, text=True, timeout=5).stdout
+    except Exception:
+        return False
+    english = re.search(r'(?ms)^\s*"?en(?:[-_][A-Za-z]+)?"?\s*=\s*(.*?);\s*$', out)
+    return bool(english) and "siri" in english.group(1).lower()
+
+
+SIRI_HOW = ("For Siri: System Settings → Accessibility → Read & Speak (Spoken Content before macOS 26) → "
+            "System voice → choose a Siri voice.")
+
+
+def voice_name(voice):
+    if voice:
+        return voice
+    return "Siri" if siri_is_system_voice() else "the Mac's system voice"
+
+
 class Voice:
-    """Says each English line in your left ear with the Mac's built-in speech (`say`).
+    """Says each English line in your left ear with the Mac's built-in speech (`say`), in the
+    Mac's system voice (Siri, if you chose it there) unless --voice names another.
 
     split: the call plays only in your right ear. The Mac's sound output becomes BlackHole, and
            call-captions-audio plays BlackHole to your right ear and the English to your left.
@@ -541,7 +586,7 @@ class Voice:
         import subprocess
 
         self._sp = subprocess
-        self.screen, self.voice, self.wpm, self.gain = screen, voice, wpm, volume
+        self.screen, self.voice, self.wpm, self.gain = screen, voice or None, wpm, volume
         self.audio = os.environ.get("CALL_CAPTIONS_AUDIO", "")
         hear = os.environ.get("CALL_CAPTIONS_HEAR", "")
         blackhole = os.environ.get("CALL_CAPTIONS_BLACKHOLE", "")
@@ -569,6 +614,8 @@ class Voice:
         self.wav = os.path.join(tempfile.mkdtemp(prefix="call-captions-"), "line.wav")
         self.cond = threading.Condition()
         self.pending = None  # the newest line to say
+        self.asked = None  # a word you looked up: said next, never skipped
+        self.tried = set()  # voices that didn't work
         self.upcoming = None  # a line to get ready ahead of time
         self.made = {}  # text -> samples made ahead of time
         self.busy = False  # making or sending a line
@@ -601,9 +648,12 @@ class Voice:
                 self.upcoming = text
                 self.cond.notify()
 
-    def say(self, text):
+    def say(self, text, lookup=False):
         with self.cond:
-            self.pending = text
+            if lookup:
+                self.asked = text
+            else:
+                self.pending = text
             self.cond.notify()
 
     def _synth(self, text):
@@ -611,31 +661,43 @@ class Voice:
         if self.voice:
             command[1:1] = ["-v", self.voice]
         r = self._sp.run(command, input=text.encode(), capture_output=True, timeout=30, start_new_session=True)
-        if r.returncode != 0 and self.voice:
-            self.screen.info(f"! the voice {self.voice!r} isn't on this Mac; using the default voice")
-            self.voice = None
-            return self._synth(text)
-        if r.returncode != 0:
-            raise RuntimeError(r.stderr.decode(errors="replace").strip() or "say failed")
-        pcm, rate = read_wav(self.wav)
-        if rate != self.rate:
-            import soxr
+        if r.returncode == 0:
+            pcm, rate = read_wav(self.wav)
+            if rate != self.rate:
+                import soxr
 
-            pcm = soxr.resample(pcm, rate, self.rate)
-        loud = np.flatnonzero(np.abs(pcm) > 1e-3)
-        if len(loud) == 0:
-            return pcm[:0]
-        start = max(0, loud[0] - self.rate // 100)  # skip the silence `say` starts with
-        return (pcm[start : loud[-1] + 1] * self.gain).astype(np.float32)
+                pcm = soxr.resample(pcm, rate, self.rate)
+            loud = np.flatnonzero(np.abs(pcm) > 1e-3)
+            if len(loud):
+                start = max(0, loud[0] - self.rate // 100)  # skip the silence `say` starts with
+                return (pcm[start : loud[-1] + 1] * self.gain).astype(np.float32)
+            if not any(c.isalnum() for c in text):
+                return pcm[:0]
+        # This voice isn't on the Mac or made no sound (a Siri voice still downloading, say): try
+        # the system voice, then Samantha, which every Mac has.
+        problem = "made no sound" if r.returncode == 0 else "isn't on this Mac"
+        self.tried.add(self.voice)
+        for other in (None, "Samantha"):
+            if other not in self.tried:
+                was = f"the voice {self.voice}" if self.voice else voice_name(None)
+                now = f"the voice {other}" if other else voice_name(None)
+                self.screen.info(f"! {was} {problem}; using {now}")
+                self.voice = other
+                return self._synth(text)
+        raise RuntimeError(r.stderr.decode(errors="replace").strip() or "say made no sound")
 
     def _run(self):
         while True:
             with self.cond:
-                while not self.closed and self.pending is None and self.upcoming is None:
+                while not self.closed and self.pending is None and self.asked is None and self.upcoming is None:
                     self.cond.wait()
                 if self.closed:
                     return
-                if self.pending is not None:
+                keep = self.asked is not None
+                if keep:
+                    text, self.asked, speak, pcm = self.asked, None, True, None
+                    self.busy = True
+                elif self.pending is not None:
                     text, self.pending, speak = self.pending, None, True
                     pcm = self.made.pop(text, None)
                     if self.upcoming == text:
@@ -650,9 +712,9 @@ class Voice:
                     if speak and time.monotonic() - t > 0.6 and not self.warned_slow:
                         self.warned_slow = True
                         self.screen.info(f"! the voice took {time.monotonic() - t:.1f}s to make a line; "
-                                         "a compact voice such as --voice Samantha is faster")
+                                         "--voice Fred (the robot) is the fastest")
                 if speak:
-                    self._play(pcm)
+                    self._play(pcm, keep)
                 else:
                     with self.cond:
                         self.made = {text: pcm}
@@ -664,14 +726,15 @@ class Voice:
                     with self.cond:
                         self.busy = False
 
-    def _play(self, pcm):
+    def _play(self, pcm, keep=False):
         # Let the line before finish. If a newer line comes in meanwhile, skip this one (it stays
-        # on screen) so the voice keeps up with the call instead of falling behind.
+        # on screen) so the voice keeps up with the call instead of falling behind. A word you
+        # looked up (keep) is never skipped.
         with self.cond:
-            while not self.closed and self.pending is None and time.monotonic() < self.busy_until - 0.1:
+            while not self.closed and (keep or self.pending is None) and time.monotonic() < self.busy_until - 0.1:
                 self.cond.wait(max(0.01, self.busy_until - 0.1 - time.monotonic()))
             behind = time.monotonic() < self.busy_until - 0.1
-            if self.closed or len(pcm) == 0 or (behind and self.pending is not None):
+            if self.closed or len(pcm) == 0 or (behind and self.pending is not None and not keep):
                 return
         try:
             self.proc.stdin.write(struct.pack("<i", len(pcm)) + pcm.astype("<f4").tobytes())
@@ -697,7 +760,7 @@ class Voice:
         end = time.monotonic() + limit
         while time.monotonic() < end and not self.failed:
             with self.cond:
-                idle = self.pending is None and not self.busy
+                idle = self.pending is None and self.asked is None and not self.busy
             if idle and time.monotonic() >= self.busy_until:
                 return
             time.sleep(0.05)
@@ -718,6 +781,57 @@ class Voice:
         except self._sp.TimeoutExpired:
             self.proc.kill()
         shutil.rmtree(os.path.dirname(self.wav), ignore_errors=True)
+
+
+class WordLookup:
+    """The word lookup (lookup.py --serve) in a process of its own, on the CPU only: highlight
+    Japanese (iTerm2 copies what you highlight; ⌘C works anywhere) and its words, a translation
+    and an explanation show among the captions, and the meaning is said in your left ear."""
+
+    LOG = os.path.join(tempfile.gettempdir(), "call-captions-lookup.log")
+
+    def __init__(self, screen):
+        import subprocess
+
+        self._sp = subprocess
+        self.screen, self.voice, self.closed = screen, None, False
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(self.LOG, "w") as log:
+            # Its own session: Ctrl+C reaches only the captioner, which then closes this.
+            self.proc = subprocess.Popen([sys.executable, os.path.join(here, "lookup.py"), "--serve"],
+                                         stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=log, text=True,
+                                         start_new_session=True)
+        threading.Thread(target=self._read, daemon=True).start()
+
+    def _read(self):
+        for line in self.proc.stdout:
+            try:
+                event = json.loads(line)
+            except ValueError:
+                if line.strip():
+                    self.screen.info(line.rstrip())
+                continue
+            if "ready" in event:
+                only = "" if event.get("models") else " (dictionary only)"
+                self.screen.info(f"{RESET}{BOLD}Word lookup on{RESET}{DIM}{only}: highlight Japanese in the captions "
+                                 "(or copy it) to see and hear what it means.")
+                continue
+            self.screen.lookup(event)
+            voice = self.voice
+            if voice is not None and event.get("say"):
+                voice.say(event["say"], lookup=True)
+        self.proc.wait()
+        if not self.closed:
+            self.screen.info(f"{RESET}{YELLOW}! The word lookup stopped (what happened: {self.LOG}){RESET}")
+
+    def close(self):
+        self.closed = True
+        if self.proc.poll() is None:
+            self.proc.terminate()  # it stops its CPU models and exits
+            try:
+                self.proc.wait(timeout=5)
+            except self._sp.TimeoutExpired:
+                self.proc.kill()  # its models' watchdog still stops them
 
 
 # ---------------------------------------------------------------- audio sources
@@ -1046,8 +1160,10 @@ class BenchScreen(Screen):
 # The live races bench runs: (speech model, finish lines at sentence ends, what it is)
 RACES = {
     "control": ("parakeet", False, "as up to 1.6: Parakeet on the GPU, a line after the full 0.5 s pause"),
-    "quick": ("parakeet", True, "the default since 1.7: Parakeet on the GPU; a line finishes as soon as a sentence ends"),
-    "turbo": ("parakeet-ane", True, "quick, with Parakeet's encoder on the Neural Engine in a helper process"),
+    "quick": ("parakeet", True, "as in 1.7, now --no-turbo: Parakeet on the GPU; a line finishes as soon as a "
+                                "sentence ends"),
+    "turbo": ("parakeet-ane", True, "the default since 1.8: quick, with Parakeet's encoder on the Neural Engine in "
+                                    "a helper process"),
 }
 
 
@@ -1126,7 +1242,7 @@ def run_race(args, mode, during=None):
 
 
 def start_lookup():
-    """The lookup pane's program, in its own process on the CPU, reading phrases from stdin."""
+    """The word lookup in its own process on the CPU, reading phrases from stdin (for the bench)."""
     import subprocess
 
     here = os.path.dirname(os.path.abspath(__file__))
@@ -1276,16 +1392,20 @@ def main():
                     help="say the English in your left ear (on by default; headphones only). split: the call "
                          "only in your right ear [default], mix: the call stays in both ears")
     ap.add_argument("--no-speak", dest="speak", action="store_const", const=None, help="captions only, no voice")
-    ap.add_argument("--voice", default="Fred",
-                    help="Mac voice; list them with: say -v '?'. Fred is the classic robot voice [Fred]")
+    ap.add_argument("--voice", default="",
+                    help="a Mac voice by name, e.g. Fred (the robot, fastest) or Samantha; list them with: say -v '?'. "
+                         "Default: the Mac's system voice, Siri if you chose a Siri voice there")
     ap.add_argument("--rate", type=int, default=240, help="speaking speed, words per minute [240]")
     ap.add_argument("--test-voice", action="store_true", help="say a test line in your left ear, then exit")
-    ap.add_argument("--no-lookup", action="store_true",
-                    help="for the app: don't open the word lookup pane (call-captions lookup) beside the captions")
+    ap.add_argument("--no-lookup", action="store_true", help="no word lookup when you highlight Japanese")
+    ap.add_argument("--no-lookup-voice", action="store_true",
+                    help="show word lookups but don't say them in your ear")
     ap.add_argument("--voice-volume", type=float, default=1.0, help="loudness of the voice, 0 to 2 [1.0]")
-    ap.add_argument("--turbo", action="store_true",
-                    help="Parakeet's encoder on the Neural Engine (about 3x faster), and a line finishes as soon as "
-                         "a sentence ends (。？). Compare with: call-captions bench")
+    ap.add_argument("--turbo", action="store_true", default=True,
+                    help="speech recognition with Parakeet's encoder on the Neural Engine, in a helper process; the "
+                         "GPU takes over at once if it stops (the default since 1.8)")
+    ap.add_argument("--no-turbo", dest="turbo", action="store_false",
+                    help="speech recognition on the GPU only (the default before 1.8; a few words can differ)")
     ap.add_argument("--no-quick-end", dest="quick_end", action="store_false",
                     help="wait out the full pause before finishing a line, as before 1.7")
     ap.add_argument("--quick-end", dest="quick_end", action="store_true", default=True,
@@ -1294,7 +1414,7 @@ def main():
     ap.add_argument("--end-silence", type=float, default=0.5, help="pause (s) that ends an utterance [0.5]")
     ap.add_argument("--early", type=float,
                     help="start the final transcription after this pause (s), before it is known to end the "
-                         "utterance; same text, sooner. 0 disables [0.25; 0.15 with --turbo]")
+                         "utterance; same text, sooner. 0 disables [0.15; 0.25 with --no-quick-end]")
     ap.add_argument("--soft-max", type=float, default=8.0, help="after this many seconds, cut at any short pause [8]")
     ap.add_argument("--hard-max", type=float, default=15.0, help="always cut an utterance at this length [15]")
     ap.add_argument("--vad-threshold", type=float, default=0.5, help="speech probability threshold [0.5]")
@@ -1329,6 +1449,7 @@ def main():
         import subprocess
 
         try:
+            print(f"Voice: {voice_name(args.voice)}, {args.rate} words a minute", flush=True)
             print(f"Left ear ({voice.hear_name}): the English voice …", flush=True)
             voice.say("Left ear. This is where the English goes.")
             voice.drain()
@@ -1343,6 +1464,8 @@ def main():
         finally:
             voice.close()  # puts the Mac's sound output back
         print("Heard both? Then it works. If the right ear was silent, use --speak mix (the call in both ears).")
+        if not args.voice and not siri_is_system_voice():
+            print(SIRI_HOW)
         return
 
     if args.list_devices:
@@ -1362,10 +1485,11 @@ def main():
         return
 
     screen = Screen(args.english_only, not args.no_timing, args.log)
-    if args.turbo:
-        args.quick_end = True
-        if args.asr == "parakeet":
-            args.asr = "parakeet-ane"
+    lookup = None
+    if not args.no_lookup and not args.prefetch:
+        lookup = WordLookup(screen)  # loads its CPU models while the others load
+    if args.turbo and args.asr == "parakeet":
+        args.asr = "parakeet-ane"
     if args.early is None:
         args.early = 0.15 if args.quick_end else 0.25
     asr = load_asr(args, screen)
@@ -1376,8 +1500,8 @@ def main():
     t = time.monotonic()
     asr(np.zeros(SR, np.float32))
     screen.info(f"  ready, warm-up {time.monotonic() - t:.1f}s")
-    if args.turbo and isinstance(asr, NeuralEngineHelper):
-        screen.info("  turbo: Parakeet's encoder on the Neural Engine; lines finish at sentence ends")
+    if isinstance(asr, NeuralEngineHelper):
+        screen.info("  turbo: Parakeet's encoder on the Neural Engine (--no-turbo: the GPU only)")
 
     mt = None
     if args.mt != "none":
@@ -1395,10 +1519,15 @@ def main():
         try:
             voice = Voice(args.speak, args.voice, args.rate, args.voice_volume, screen)
             call = "the call in your right ear" if args.speak == "split" else "the call in both ears"
-            screen.info(f"{RESET}{BOLD}Voice on{RESET}{DIM}: English in your left ear, {call} ({voice.hear_name}). "
-                        f"--no-speak turns it off.")
+            name = voice_name(args.voice)
+            screen.info(f"{RESET}{BOLD}Voice on{RESET}{DIM} ({name}): English in your left ear, {call} "
+                        f"({voice.hear_name}). --no-speak turns it off.")
+            if name == "the Mac's system voice":
+                screen.info("  " + SIRI_HOW)
         except VoiceOff as e:
             screen.info(f"{RESET}{YELLOW}! Voice off: {e}{RESET}")
+    if lookup is not None and not args.no_lookup_voice:
+        lookup.voice = voice
 
     captioner = Captioner(args, asr, mt, screen, voice)
     q = queue.Queue()
@@ -1419,6 +1548,8 @@ def main():
         pass
     finally:
         screen.clear()
+        if lookup is not None:
+            lookup.close()
         if voice is not None:
             voice.close()
         if stream is not None:
